@@ -1,0 +1,7 @@
+{
+  "name": "PillCare",
+  "description": "A smart medication management PWA with AI-powered interactions checking and bottle scanning.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
