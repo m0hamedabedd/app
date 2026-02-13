@@ -21,6 +21,8 @@ const MOCK_USER: UserProfile = {
   notificationsEnabled: false
 };
 
+const DISPENSE_WINDOW_MINUTES = 15;
+
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
@@ -184,9 +186,53 @@ const App: React.FC = () => {
     syncDispenserConfig(newMeds);
   };
 
+  const isWithinDispenseWindow = (med: Medication, now: Date) => {
+    if (!med.scheduledTimes || med.scheduledTimes.length === 0) {
+      return { allowed: true, nearest: '--:--', diff: 0 };
+    }
+
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    let nearest = med.scheduledTimes[0];
+    let nearestDiff = Number.MAX_SAFE_INTEGER;
+
+    for (const t of med.scheduledTimes) {
+      const [hStr, mStr] = t.split(':');
+      const h = Number(hStr);
+      const m = Number(mStr);
+      if (Number.isNaN(h) || Number.isNaN(m)) continue;
+
+      const target = h * 60 + m;
+      let diff = Math.abs(nowMinutes - target);
+      if (diff > 720) diff = 1440 - diff;
+
+      if (diff < nearestDiff) {
+        nearestDiff = diff;
+        nearest = t;
+      }
+    }
+
+    return {
+      allowed: nearestDiff <= DISPENSE_WINDOW_MINUTES,
+      nearest,
+      diff: nearestDiff
+    };
+  };
+
   const handleLogDose = (medId: string) => {
     const med = medications.find(m => m.id === medId);
     if (med) {
+        if (med.slot) {
+            const windowCheck = isWithinDispenseWindow(med, new Date());
+            if (!windowCheck.allowed) {
+                addNotification(
+                    "Outside Dispense Window",
+                    `${med.name} can be dispensed within +/-${DISPENSE_WINDOW_MINUTES} minutes of ${windowCheck.nearest}. Current diff: ${windowCheck.diff} min.`,
+                    'warning'
+                );
+                return;
+            }
+        }
+
         const newLog: LogEntry = {
             id: Date.now().toString(),
             medicationId: med.id,

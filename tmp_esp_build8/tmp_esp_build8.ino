@@ -15,7 +15,6 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <time.h>
-#include <math.h>
 #if __has_include(<TFT_eSPI.h>)
 #include <TFT_eSPI.h>
 #define HAS_TFT 1
@@ -63,7 +62,7 @@ const int MOTOR_SEQUENCE[4][4] = {
 
 // Set per-slot direction (1 or -1) and turns per command
 int SLOT_DIRECTION[SLOT_COUNT] = {1, 1, 1};
-float SLOT_TURNS_PER_COMMAND[SLOT_COUNT] = {1.0f, 1.0f, 1.0f};
+int SLOT_TURNS_PER_COMMAND[SLOT_COUNT] = {1, 1, 1};
 int SLOT_SPEED_RPM[SLOT_COUNT] = {12, 12, 12};
 int gMotorStepIndex[SLOT_COUNT] = {0, 0, 0};
 
@@ -76,7 +75,6 @@ const unsigned long HEARTBEAT_MS = 15000;
 const unsigned long CONFIG_POLL_MS = 15000;
 const unsigned long SCHEDULE_TICK_MS = 1000;
 const unsigned long LCD_REFRESH_MS = 1000;
-const int DISPENSE_WINDOW_MINUTES = 15;
 
 const char* NTP_SERVER = "pool.ntp.org";
 const long GMT_OFFSET_SEC = 7200;      // Egypt base timezone
@@ -106,7 +104,7 @@ String gLastDispenseLabel = "";
 struct SlotSchedule {
   bool active = false;
   String name = "";
-  float turns = 1.0f;
+  int turns = 1;
   int timesCount = 0;
   String times[MAX_TIMES_PER_SLOT];
   int lastDispensedYDay[MAX_TIMES_PER_SLOT];
@@ -237,32 +235,18 @@ String extractJsonArray(const String& json, const String& key) {
   return extractJsonBlock(json, key, '[', ']');
 }
 
-float extractFirstPositiveFloat(const String& text) {
+int extractFirstPositiveInt(const String& text) {
   String number = "";
-  bool seenDigit = false;
-  bool seenDot = false;
-
   for (int i = 0; i < (int)text.length(); i++) {
     char c = text[i];
     if (c >= '0' && c <= '9') {
       number += c;
-      seenDigit = true;
-      continue;
-    }
-    if (c == '.' && !seenDot) {
-      number += c;
-      seenDot = true;
-      continue;
-    }
-    if (seenDigit) break;
-    if (seenDot && !seenDigit) {
-      number = "";
-      seenDot = false;
+    } else if (number.length() > 0) {
+      break;
     }
   }
-
-  float v = number.toFloat();
-  if (v <= 0.0f) v = 1.0f;
+  int v = number.toInt();
+  if (v < 1) v = 1;
   return v;
 }
 
@@ -547,7 +531,7 @@ void clearSchedules() {
   for (int i = 0; i < SLOT_COUNT; i++) {
     gSchedules[i].active = false;
     gSchedules[i].name = "";
-    gSchedules[i].turns = 1.0f;
+    gSchedules[i].turns = 1;
     gSchedules[i].timesCount = 0;
     for (int j = 0; j < MAX_TIMES_PER_SLOT; j++) {
       gSchedules[i].times[j] = "";
@@ -562,7 +546,7 @@ void parseSlotScheduleFromObject(const String& objJson, int slotIndex) {
 
   s.active = true;
   s.name = extractJsonString(objJson, "name");
-  s.turns = extractFirstPositiveFloat(extractJsonString(objJson, "dosage"));
+  s.turns = extractFirstPositiveInt(extractJsonString(objJson, "dosage"));
 
   String timesArray = extractJsonArray(objJson, "times");
   s.timesCount = parseTimesArray(timesArray, s.times, MAX_TIMES_PER_SLOT);
@@ -601,41 +585,6 @@ bool parseHHMM(const String& hhmm, int& hh, int& mm) {
   mm = hhmm.substring(3, 5).toInt();
   if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return false;
   return true;
-}
-
-int circularMinuteDiff(int a, int b) {
-  int diff = abs(a - b);
-  if (diff > 720) diff = 1440 - diff;
-  return diff;
-}
-
-bool isWithinDispenseWindow(int slotIndex, int windowMinutes, String& nearestTimeOut, int& nearestDiffOut) {
-  nearestTimeOut = "--:--";
-  nearestDiffOut = 9999;
-
-  if (slotIndex < 0 || slotIndex >= SLOT_COUNT) return false;
-  SlotSchedule& s = gSchedules[slotIndex];
-  if (!s.active || s.timesCount <= 0) return true;
-
-  struct tm nowTm;
-  if (!getLocalTimeSafe(nowTm)) return false;
-
-  int nowMinutes = nowTm.tm_hour * 60 + nowTm.tm_min;
-  bool within = false;
-
-  for (int i = 0; i < s.timesCount; i++) {
-    int h = 0, m = 0;
-    if (!parseHHMM(s.times[i], h, m)) continue;
-    int targetMinutes = h * 60 + m;
-    int diff = circularMinuteDiff(nowMinutes, targetMinutes);
-    if (diff < nearestDiffOut) {
-      nearestDiffOut = diff;
-      nearestTimeOut = s.times[i];
-    }
-    if (diff <= windowMinutes) within = true;
-  }
-
-  return within;
 }
 
 int secondsUntilDailyTime(const struct tm& nowTm, int targetH, int targetM) {
@@ -743,23 +692,23 @@ bool dispenseSlot(int slotIndex) {
 
   gDispenseInProgress = true;
 
-  float turns = SLOT_TURNS_PER_COMMAND[slotIndex];
-  if (turns <= 0.0f) turns = 1.0f;
+  const int turns = SLOT_TURNS_PER_COMMAND[slotIndex] < 1 ? 1 : SLOT_TURNS_PER_COMMAND[slotIndex];
   const int dir = SLOT_DIRECTION[slotIndex] >= 0 ? 1 : -1;
   int rpm = SLOT_SPEED_RPM[slotIndex];
   if (rpm < 1) rpm = 1;
-  int totalSteps = static_cast<int>(lroundf(turns * static_cast<float>(STEPS_PER_REVOLUTION)));
-  if (totalSteps < 1) totalSteps = 1;
   String medName = gSchedules[slotIndex].name;
   if (medName.length() == 0) medName = "Slot " + String(slotIndex + 1);
   gLastDispenseLabel = medName;
 
   lcdShowDispensing(slotIndex + 1, medName);
 
-  Serial.printf("[MOTOR] Slot %d, turns=%.2f, steps=%d, dir=%d, rpm=%d\n", slotIndex + 1, turns, totalSteps, dir, rpm);
-  moveMotorSteps(slotIndex, dir * totalSteps, rpm);
-  delay(250);
-  yield();
+  Serial.printf("[MOTOR] Slot %d, turns=%d, dir=%d, rpm=%d\n", slotIndex + 1, turns, dir, rpm);
+
+  for (int i = 0; i < turns; i++) {
+    moveMotorSteps(slotIndex, dir * STEPS_PER_REVOLUTION, rpm);
+    delay(250);
+    yield();
+  }
 
   stopMotorCoils();
   gDispenseInProgress = false;
@@ -813,18 +762,6 @@ void processDispenseCommand() {
     return;
   }
 
-  String nearestTime;
-  int nearestDiff = 9999;
-  bool windowOk = isWithinDispenseWindow(cmd.slot - 1, DISPENSE_WINDOW_MINUTES, nearestTime, nearestDiff);
-  if (!windowOk) {
-    String msg = "Outside +-15m window";
-    if (nearestDiff < 9999) {
-      msg += " (nearest " + nearestTime + ", diff " + String(nearestDiff) + "m)";
-    }
-    publishDispenseResult(cmd, false, msg);
-    return;
-  }
-
   bool ok = dispenseSlot(cmd.slot - 1);
   publishDispenseResult(cmd, ok, ok ? "Dispensed successfully" : "Motor failed");
 }
@@ -845,7 +782,7 @@ void printSchedules() {
   Serial.println("----- SCHEDULES -----");
   for (int i = 0; i < SLOT_COUNT; i++) {
     const SlotSchedule& s = gSchedules[i];
-    Serial.printf("Slot %d: active=%s turns=%.2f name=%s\n", i + 1, s.active ? "yes" : "no", s.turns, s.name.c_str());
+    Serial.printf("Slot %d: active=%s turns=%d name=%s\n", i + 1, s.active ? "yes" : "no", s.turns, s.name.c_str());
     for (int t = 0; t < s.timesCount; t++) {
       Serial.printf("  - %s (last yday=%d)\n", s.times[t].c_str(), s.lastDispensedYDay[t]);
     }

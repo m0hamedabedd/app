@@ -109,6 +109,16 @@ export const Medications: React.FC<MedicationsProps> = ({ medications, onAdd, on
         frequency: finalLabel
     };
 
+    if (finalData.slot !== undefined) {
+        const occupied = medications.find(
+            m => m.slot === finalData.slot && m.id !== editingId
+        );
+        if (occupied) {
+            alert(`Slot ${finalData.slot} is already assigned to "${occupied.name}". Choose another slot or None.`);
+            return;
+        }
+    }
+
     if (finalData.name) {
         if (editingId) {
             onUpdate({ ...finalData as Medication, id: editingId });
@@ -420,10 +430,13 @@ export const Medications: React.FC<MedicationsProps> = ({ medications, onAdd, on
                                 <button
                                 key={slotNum}
                                 type="button"
+                                disabled={!!occupied}
                                 onClick={() => setFormData({...formData, slot: slotNum})}
                                 className={`relative py-4 rounded-xl text-xs font-bold border-2 transition-all flex flex-col items-center justify-center ${
                                     formData.slot === slotNum
                                     ? 'border-indigo-600 bg-indigo-600 text-white' 
+                                    : occupied
+                                    ? 'border-red-100 bg-red-50 text-red-300 cursor-not-allowed'
                                     : 'border-gray-200 bg-white text-indigo-600 hover:border-indigo-100'
                                 }`}
                                 >
