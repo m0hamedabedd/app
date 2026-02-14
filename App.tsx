@@ -34,8 +34,10 @@ const App: React.FC = () => {
 
   const [snoozedMeds, setSnoozedMeds] = useState<{ [key: string]: number }>({});
   
-  // Track last checked minute to avoid duplicate alerts in same minute
-  const lastCheckTimeRef = useRef<string>("");
+  const lastReminderCheckMsRef = useRef<number>(Date.now());
+  const reminderDayRef = useRef<string>(new Date().toISOString().split('T')[0]);
+  const firedReminderKeysRef = useRef<Set<string>>(new Set());
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
   // Auth Listener
   useEffect(() => {
@@ -106,17 +108,82 @@ const App: React.FC = () => {
       setNotifications(prev => [newNotif, ...prev]);
   };
 
-  const sendBrowserNotification = (title: string, body: string) => {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      try {
-        new Notification(title, {
-          body,
-          icon: 'https://cdn-icons-png.flaticon.com/512/883/883360.png', // Fallback icon
-        });
-      } catch (e) {
-        console.error("Failed to send notification", e);
+  const playReminderSound = () => {
+    try {
+      const AudioCtor = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext | undefined;
+      if (!AudioCtor) return;
+      if (!audioCtxRef.current) audioCtxRef.current = new AudioCtor();
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') {
+        void ctx.resume();
       }
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.36);
+    } catch (e) {
+      console.error("Failed to play reminder sound", e);
     }
+  };
+
+  const sendBrowserNotification = async (title: string, body: string) => {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+    const options: NotificationOptions = {
+      body,
+      icon: 'https://cdn-icons-png.flaticon.com/512/883/883360.png',
+      badge: 'https://cdn-icons-png.flaticon.com/512/883/883360.png',
+      tag: `pillcare-${title}`,
+      renotify: true,
+      requireInteraction: true,
+      vibrate: [180, 120, 180]
+    };
+
+    try {
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        await reg.showNotification(title, options);
+        return;
+      }
+
+      new Notification(title, options);
+    } catch (e) {
+      console.error("Failed to send notification", e);
+    }
+  };
+
+  const parseTodayTime = (base: Date, hhmm: string) => {
+    const [hStr, mStr] = hhmm.split(':');
+    const h = Number(hStr);
+    const m = Number(mStr);
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    const dt = new Date(base);
+    dt.setHours(h, m, 0, 0);
+    return dt;
+  };
+
+  const triggerReminder = (
+    title: string,
+    message: string,
+    dedupeKey?: string
+  ) => {
+    if (dedupeKey && firedReminderKeysRef.current.has(dedupeKey)) return;
+    if (dedupeKey) firedReminderKeysRef.current.add(dedupeKey);
+
+    addNotification(title, message, 'reminder');
+    if (user.notificationsEnabled) {
+      void sendBrowserNotification(title, message);
+    }
+
+    playReminderSound();
   };
 
   // Periodic Reminder Check (Every 60s)
@@ -125,34 +192,61 @@ const App: React.FC = () => {
 
     const checkReminders = () => {
         const now = new Date();
-        const currentTimeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-        
-        // Prevent duplicate checks within the same minute
-        if (lastCheckTimeRef.current === currentTimeString) return;
-        lastCheckTimeRef.current = currentTimeString;
+        const nowMs = now.getTime();
+        const fromMs = lastReminderCheckMsRef.current - 1000;
+        lastReminderCheckMsRef.current = nowMs;
+
+        const dayKey = now.toISOString().split('T')[0];
+        if (reminderDayRef.current !== dayKey) {
+          reminderDayRef.current = dayKey;
+          firedReminderKeysRef.current.clear();
+        }
 
         medications.forEach(med => {
-            // Check Daily Schedules
-            if (med.frequencyType === 'Daily' && med.scheduledTimes?.includes(currentTimeString)) {
-                // Determine if already taken today? 
-                // For simplified reminders, we just remind at the time.
-                const title = `Time for ${med.name}`;
-                const msg = `It's ${currentTimeString}. Please take your ${med.dosage} dose.`;
-                
-                if (user.notificationsEnabled) {
-                    sendBrowserNotification(title, msg);
+            if (med.frequencyType !== 'Daily' || !med.scheduledTimes?.length) return;
+
+            med.scheduledTimes.forEach(time => {
+                const scheduleDate = parseTodayTime(now, time);
+                if (!scheduleDate) return;
+                const scheduleMs = scheduleDate.getTime();
+
+                if (scheduleMs > fromMs && scheduleMs <= nowMs + 1000) {
+                    if (snoozedMeds[med.id] && nowMs < snoozedMeds[med.id]) return;
+                    const key = `daily:${dayKey}:${med.id}:${time}`;
+                    triggerReminder(
+                      `Time for ${med.name}`,
+                      `It's ${time}. Please take your ${med.dosage} dose.`,
+                      key
+                    );
                 }
-                addNotification(title, msg, 'reminder');
-            }
+            });
         });
 
-        // Check Low Stock (Less frequent in real app, but here we check periodically)
-        // To avoid spam, we could check only once a day, but for demo we assume logic elsewhere handles frequency
+        Object.entries(snoozedMeds).forEach(([medId, snoozeUntil]) => {
+          if (nowMs < snoozeUntil) return;
+          const med = medications.find(m => m.id === medId);
+          if (!med) return;
+
+          const key = `snooze:${medId}:${Math.floor(snoozeUntil / 60000)}`;
+          triggerReminder(
+            `Snooze ended: ${med.name}`,
+            `Reminder is active again for ${med.dosage}.`,
+            key
+          );
+
+          setSnoozedMeds(prev => {
+            if (!(medId in prev)) return prev;
+            const next = { ...prev };
+            delete next[medId];
+            return next;
+          });
+        });
     };
 
-    const timer = setInterval(checkReminders, 10000); // Check every 10s to hit the minute mark precisely
+    checkReminders();
+    const timer = setInterval(checkReminders, 15000);
     return () => clearInterval(timer);
-  }, [medications, currentUser, user.notificationsEnabled]);
+  }, [medications, currentUser, user.notificationsEnabled, snoozedMeds]);
 
   // Initial Permission Request
   useEffect(() => {

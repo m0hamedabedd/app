@@ -159,6 +159,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
       return diff <= 30 && diff >= 0;
   });
 
+  const dueNowItems = timeline.filter(t => t.status === 'due' && !t.isSnoozed);
+  const snoozedDueItems = timeline.filter(t => t.status === 'due' && t.isSnoozed);
+
   const getGreeting = () => {
       const h = currentTime.getHours();
       if (h < 12) return 'Good Morning';
@@ -270,14 +273,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <div className="absolute left-4 top-4 bottom-4 w-0.5 bg-gray-200 z-0"></div>
 
                   {/* Due Now High Priority */}
-                  {timeline.some(t => t.status === 'due' && !t.isSnoozed) && (
+                  {dueNowItems.length > 0 && (
                       <div className="relative z-10 pl-12">
                           <div className="absolute left-0 top-0 w-8 h-8 rounded-full bg-red-500 border-4 border-white shadow-md flex items-center justify-center text-white text-xs animate-pulse">
                               <i className="fas fa-bell"></i>
                           </div>
                           <h3 className="text-red-500 font-bold text-sm uppercase tracking-wide mb-3">Due Now</h3>
                           <div className="space-y-3">
-                              {timeline.filter(t => t.status === 'due' && !t.isSnoozed).map(item => (
+                              {dueNowItems.map(item => (
                                   <MedicationCard 
                                       key={item.id}
                                       medication={{...item.medication, scheduledTimes: [item.time]}} // Show only relevant time
@@ -287,6 +290,34 @@ export const Dashboard: React.FC<DashboardProps> = ({
                                       onDismiss={() => onDismiss(item.medication.id)}
                                   />
                               ))}
+                          </div>
+                      </div>
+                  )}
+
+                  {/* Snoozed (Keep visible instead of disappearing) */}
+                  {snoozedDueItems.length > 0 && (
+                      <div className="relative z-10 pl-12">
+                          <div className="absolute left-0 top-0 w-8 h-8 rounded-full bg-orange-400 border-4 border-white shadow-md flex items-center justify-center text-white text-xs">
+                              <i className="fas fa-clock"></i>
+                          </div>
+                          <h3 className="text-orange-500 font-bold text-sm uppercase tracking-wide mb-3">Snoozed</h3>
+                          <div className="space-y-3">
+                              {snoozedDueItems.map(item => {
+                                  const snoozeUntil = snoozedMeds[item.medication.id] || Date.now();
+                                  const minsLeft = Math.max(0, Math.ceil((snoozeUntil - Date.now()) / (1000 * 60)));
+                                  return (
+                                    <div key={item.id} className="space-y-1">
+                                        <p className="text-[11px] text-orange-600 font-semibold">Reminds again in {minsLeft} min</p>
+                                        <MedicationCard
+                                            medication={{...item.medication, scheduledTimes: [item.time]}}
+                                            isDue={true}
+                                            onTake={() => onLogDose(item.medication.id)}
+                                            onSnooze={() => onSnooze(item.medication.id)}
+                                            onDismiss={() => onDismiss(item.medication.id)}
+                                        />
+                                    </div>
+                                  );
+                              })}
                           </div>
                       </div>
                   )}
