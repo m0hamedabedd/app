@@ -9,7 +9,7 @@ import { History } from './pages/History';
 import { Reports } from './pages/Reports';
 import { AuthPage } from './pages/Auth';
 import { Medication, UserProfile, LogEntry, DosageForm, AppNotification } from './types';
-import { syncDispenserConfig, sendDispenseCommand, syncLogs, listenToData, auth, saveUserProfile } from './services/firebase';
+import { syncDispenserConfig, sendDispenseCommand, syncLogs, listenToData, auth, saveUserProfile, registerPushToken, listenForForegroundPush, saveUserTimezone } from './services/firebase';
 
 // Mock Data Structure
 const MOCK_USER: UserProfile = {
@@ -38,6 +38,7 @@ const App: React.FC = () => {
   const reminderDayRef = useRef<string>(new Date().toISOString().split('T')[0]);
   const firedReminderKeysRef = useRef<Set<string>>(new Set());
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const timezoneSyncedRef = useRef<string>("");
 
   // Auth Listener
   useEffect(() => {
@@ -254,6 +255,43 @@ const App: React.FC = () => {
     // However, if already granted, we can assume we are good.
     // If we want to prompt early, we can, but let's stick to user-initiated in Profile for better UX.
   }, []);
+
+  useEffect(() => {
+    if (!currentUser || !user.notificationsEnabled) return;
+    void registerPushToken();
+  }, [currentUser, user.notificationsEnabled]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    let unsubscribe: (() => void) | undefined;
+
+    const attach = async () => {
+      unsubscribe = await listenForForegroundPush((payload) => {
+        const title = payload.notification?.title || "Medication Reminder";
+        const body = payload.notification?.body || "You have a due medication.";
+        addNotification(title, body, 'reminder');
+        playReminderSound();
+      });
+    };
+
+    void attach();
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    if (!tz) return;
+    if (timezoneSyncedRef.current === tz) return;
+    if (user.timezone === tz) {
+      timezoneSyncedRef.current = tz;
+      return;
+    }
+    timezoneSyncedRef.current = tz;
+    saveUserTimezone(tz);
+  }, [currentUser, user.timezone]);
 
   const handleClearNotifications = () => {
       setNotifications([]);

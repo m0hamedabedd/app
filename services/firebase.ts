@@ -1,10 +1,12 @@
 import firebase from 'firebase/compat/app';
 import 'firebase/compat/database';
 import 'firebase/compat/auth';
+import { getApp, getApps, initializeApp } from 'firebase/app';
+import { getMessaging, getToken, isSupported, onMessage, MessagePayload } from 'firebase/messaging';
 import { Medication, LogEntry, UserProfile } from "../types";
 
 // Firebase configuration provided by the user
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: "AIzaSyBImg8pi8XAvvBNBL3_163DUFxYd-LqIbY",
   authDomain: "pillcaree-21f7b.firebaseapp.com",
   databaseURL: "https://pillcaree-21f7b-default-rtdb.firebaseio.com",
@@ -19,10 +21,57 @@ const firebaseConfig = {
 const app = firebase.apps.length === 0 ? firebase.initializeApp(firebaseConfig) : firebase.app();
 const db = app.database();
 export const auth = app.auth();
+const modularApp = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
 const sanitizeForFirebase = (data: any) => {
   if (data === undefined) return null;
   return JSON.parse(JSON.stringify(data));
+};
+
+const toSafeKey = (input: string) =>
+  btoa(unescape(encodeURIComponent(input))).replace(/[./#[\]$+=]/g, "_");
+
+export const registerPushToken = async () => {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return;
+  if (typeof window === 'undefined') return;
+  if (!('Notification' in window)) return;
+  if (Notification.permission !== 'granted') return;
+
+  const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY as string | undefined;
+  if (!vapidKey) {
+    console.warn("Missing VITE_FIREBASE_VAPID_KEY. Push token registration skipped.");
+    return;
+  }
+
+  const supported = await isSupported().catch(() => false);
+  if (!supported) return;
+
+  const registration = await navigator.serviceWorker.ready;
+  const messaging = getMessaging(modularApp);
+  const token = await getToken(messaging, {
+    vapidKey,
+    serviceWorkerRegistration: registration
+  });
+
+  if (!token) return;
+
+  const tokenKey = toSafeKey(token);
+  const tokenRef = db.ref(`users/${uid}/fcmTokens/${tokenKey}`);
+  await tokenRef.set(sanitizeForFirebase({
+    token,
+    updatedAt: Date.now(),
+    platform: "web"
+  }));
+};
+
+export const listenForForegroundPush = async (
+  handler: (payload: MessagePayload) => void
+) => {
+  const supported = await isSupported().catch(() => false);
+  if (!supported) return () => {};
+  const messaging = getMessaging(modularApp);
+  return onMessage(messaging, handler);
 };
 
 export const sendDispenseCommand = (slot: number, medName: string) => {
@@ -81,6 +130,14 @@ export const saveUserProfile = (profile: UserProfile) => {
 
   const profileRef = db.ref(`users/${uid}/userProfile`);
   profileRef.set(sanitizeForFirebase(profile)).catch(e => console.error("Firebase Error (Save Profile):", e));
+};
+
+export const saveUserTimezone = (timezone: string) => {
+  const uid = auth.currentUser?.uid;
+  if (!uid || !timezone) return;
+
+  const timezoneRef = db.ref(`users/${uid}/userProfile/timezone`);
+  timezoneRef.set(timezone).catch(e => console.error("Firebase Error (Save Timezone):", e));
 };
 
 /**

@@ -1,3 +1,35 @@
+/* global firebase */
+try {
+  importScripts('https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js');
+  importScripts('https://www.gstatic.com/firebasejs/10.13.2/firebase-messaging-compat.js');
+
+  firebase.initializeApp({
+    apiKey: "AIzaSyBImg8pi8XAvvBNBL3_163DUFxYd-LqIbY",
+    authDomain: "pillcaree-21f7b.firebaseapp.com",
+    databaseURL: "https://pillcaree-21f7b-default-rtdb.firebaseio.com",
+    projectId: "pillcaree-21f7b",
+    storageBucket: "pillcaree-21f7b.firebasestorage.app",
+    messagingSenderId: "649163877313",
+    appId: "1:649163877313:web:f00ef64521c91ecff65d40",
+    measurementId: "G-2JB29FMHNM"
+  });
+
+  const messaging = firebase.messaging();
+  messaging.onBackgroundMessage((payload) => {
+    const title = payload.notification?.title || 'Medication Reminder';
+    const body = payload.notification?.body || 'You have a due medication.';
+    const notificationOptions = {
+      body,
+      icon: payload.notification?.icon || '/icons/icon-192.svg',
+      badge: '/icons/icon-192.svg',
+      data: payload.data || {}
+    };
+    self.registration.showNotification(title, notificationOptions);
+  });
+} catch (e) {
+  // Firebase messaging may be unavailable in unsupported browsers.
+}
+
 const CACHE_NAME = 'pillcare-cache-v1';
 const PRECACHE_URLS = [
   '/',

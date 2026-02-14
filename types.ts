@@ -36,6 +36,7 @@ export interface UserProfile {
   emergencyContact: string;
   notificationsEnabled?: boolean;
   photoURL?: string;
+  timezone?: string;
 }
 
 export interface LogEntry {
