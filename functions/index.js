@@ -8,7 +8,9 @@ if (!admin.apps.length) {
 
 const db = admin.database();
 
-const REMINDER_WINDOW_MINUTES = 1;
+const ALARM_REPEAT_WINDOW_MINUTES = 15;
+const ALARM_REPEAT_INTERVAL_SECONDS = 120;
+const MAX_ALARM_REPEATS = 8;
 const WEEKDAY_INDEX = {
   Sun: 0,
   Mon: 1,
@@ -42,7 +44,8 @@ const getNowParts = (timeZone) => {
     const dateKey = `${map.year}-${map.month}-${map.day}`;
     const timeKey = `${map.hour}:${map.minute}`;
     const weekday = WEEKDAY_INDEX[map.weekday] ?? 0;
-    return { dateKey, timeKey, weekday };
+    const nowMinutes = Number(map.hour) * 60 + Number(map.minute);
+    return { dateKey, timeKey, weekday, nowMinutes };
   } catch (err) {
     logger.warn(`Invalid timezone "${timeZone}", falling back to UTC`);
     return getNowParts("UTC");
@@ -100,7 +103,7 @@ exports.sendMedicationReminders = onSchedule(
       if (!profile.notificationsEnabled) continue;
 
       const timezone = profile.timezone || "UTC";
-      const { dateKey, timeKey, weekday } = getNowParts(timezone);
+      const { dateKey, timeKey, weekday, nowMinutes } = getNowParts(timezone);
       const medications = toArray(userData.medications);
       const logs = toArray(userData.logs);
       const tokenRecords = userData.fcmTokens || {};
@@ -133,13 +136,30 @@ exports.sendMedicationReminders = onSchedule(
             .filter((t) => typeof t === "string")
             .sort((a, b) => toTimeSortValue(a) - toTimeSortValue(b));
 
-          if (!times.includes(timeKey)) return null;
-
           const actionedCount = actionedCountByMed[med.id] || 0;
-          const dueSlotIndex = times.findIndex((t, idx) => t === timeKey && idx >= actionedCount);
+          if (actionedCount >= times.length) return null;
+
+          let dueSlotIndex = -1;
+          let dueTime = "";
+          let minutesLate = 0;
+
+          for (let idx = times.length - 1; idx >= actionedCount; idx -= 1) {
+            const candidateTime = times[idx];
+            const candidateMinutes = toTimeSortValue(candidateTime);
+            if (candidateMinutes === Number.MAX_SAFE_INTEGER) continue;
+
+            const delta = nowMinutes - candidateMinutes;
+            if (delta < 0 || delta > ALARM_REPEAT_WINDOW_MINUTES) continue;
+
+            dueSlotIndex = idx;
+            dueTime = candidateTime;
+            minutesLate = delta;
+            break;
+          }
+
           if (dueSlotIndex < 0) return null;
 
-          return { med, dueSlotIndex };
+          return { med, dueSlotIndex, dueTime, minutesLate };
         })
         .filter(Boolean);
 
@@ -151,11 +171,28 @@ exports.sendMedicationReminders = onSchedule(
 
       for (const entry of dueEntries) {
         const med = entry.med;
-        const reminderKey = `${med.id || med.name || "med"}_${timeKey}_${entry.dueSlotIndex}`;
-        if (dayLog[reminderKey]) continue;
+        const reminderKey = `${med.id || med.name || "med"}_${entry.dueTime}_${entry.dueSlotIndex}`;
 
-        const title = `Time for ${med.name || "your medication"}`;
-        const body = `It's ${timeKey}. Take ${med.dosage || "your dose"} now.`;
+        const existing = dayLog[reminderKey];
+        const lastSentAt =
+          typeof existing === "object" && existing
+            ? Number(existing.lastSentAt || 0)
+            : Number(existing || 0);
+        const attempts =
+          typeof existing === "object" && existing
+            ? Number(existing.attempts || 0)
+            : lastSentAt > 0
+              ? 1
+              : 0;
+
+        if (attempts >= MAX_ALARM_REPEATS) continue;
+        if (lastSentAt > 0 && nowMs - lastSentAt < ALARM_REPEAT_INTERVAL_SECONDS * 1000) continue;
+
+        const title = `Medication alarm: ${med.name || "your medication"}`;
+        const body =
+          entry.minutesLate > 0
+            ? `${entry.minutesLate} min overdue. Take ${med.dosage || "your dose"} now.`
+            : `It's ${entry.dueTime}. Take ${med.dosage || "your dose"} now.`;
 
         let sentForThisReminder = 0;
         for (const tokenBatch of chunk(tokens, 500)) {
@@ -169,13 +206,16 @@ exports.sendMedicationReminders = onSchedule(
               type: "medication_reminder",
               medicationId: String(med.id || ""),
               medicationName: String(med.name || ""),
-              scheduledTime: timeKey,
-              userId: uid
+              scheduledTime: String(entry.dueTime || timeKey),
+              userId: uid,
+              reminderKey: String(reminderKey),
+              alarm: "1",
+              attempts: String(attempts + 1)
             },
             webpush: {
               headers: {
                 Urgency: "high",
-                TTL: "120"
+                TTL: "1800"
               },
               notification: {
                 title,
@@ -183,8 +223,13 @@ exports.sendMedicationReminders = onSchedule(
                 icon: "/icons/icon-192.svg",
                 badge: "/icons/icon-192.svg",
                 requireInteraction: true,
-                tag: `pillcare_${uid}_${reminderKey}`,
-                vibrate: [180, 120, 180]
+                renotify: true,
+                silent: false,
+                tag: `pillcare_alarm_${uid}_${reminderKey}`,
+                vibrate: [260, 120, 260, 120, 420],
+                actions: [
+                  { action: "open", title: "Open PillCare" }
+                ]
               },
               fcmOptions: {
                 link: "/#/"
@@ -216,7 +261,10 @@ exports.sendMedicationReminders = onSchedule(
         }
 
         if (sentForThisReminder > 0) {
-          dayLog[reminderKey] = nowMs;
+          dayLog[reminderKey] = {
+            lastSentAt: nowMs,
+            attempts: attempts + 1
+          };
           totalSent += sentForThisReminder;
         }
       }
@@ -234,7 +282,9 @@ exports.sendMedicationReminders = onSchedule(
     logger.info("Medication reminder run complete", {
       usersProcessed,
       totalSent,
-      reminderWindowMinutes: REMINDER_WINDOW_MINUTES
+      reminderWindowMinutes: ALARM_REPEAT_WINDOW_MINUTES,
+      reminderRepeatIntervalSeconds: ALARM_REPEAT_INTERVAL_SECONDS,
+      maxAlarmRepeats: MAX_ALARM_REPEATS
     });
   }
 );

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { UserProfile, Medication, LogEntry } from '../types';
-import { isWebPushSupported, registerPushToken } from '../services/firebase';
+import { getWebPushSupportStatus, registerPushToken } from '../services/firebase';
 import { resolveLanguage, tr } from '../services/i18n';
 
 interface ProfileProps {
@@ -73,8 +73,12 @@ export const Profile: React.FC<ProfileProps> = ({ user, medications, logs, onLog
     if (user.notificationsEnabled) {
       onUpdate({ ...user, notificationsEnabled: false });
     } else {
-      const supported = await isWebPushSupported();
-      if (!supported) {
+      const support = await getWebPushSupportStatus();
+      if (!support.supported) {
+        if (support.reason === 'missing-vapid-key') {
+          alert(tr(language, "Push is not configured for this deployment. Add VITE_FIREBASE_VAPID_KEY then redeploy.", "لم يتم إعداد Push لهذا الإصدار. أضف VITE_FIREBASE_VAPID_KEY ثم أعد النشر."));
+          return;
+        }
         if (isIos && !isStandalone) {
           alert(tr(language, "On iPhone, install the app to Home Screen first, open it from the Home Screen, then allow notifications.", "\u0639\u0644\u0649 iPhone: \u062b\u0628\u0651\u062a \u0627\u0644\u062a\u0637\u0628\u064a\u0642 \u0623\u0648\u0644\u0627\u064b \u0639\u0644\u0649 \u0627\u0644\u0634\u0627\u0634\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629\u060c \u062b\u0645 \u0627\u0641\u062a\u062d\u0647 \u0645\u0646 \u0627\u0644\u0634\u0627\u0634\u0629 \u0648\u0627\u0633\u0645\u062d \u0628\u0627\u0644\u0625\u0634\u0639\u0627\u0631\u0627\u062a."));
         } else {
@@ -90,12 +94,18 @@ export const Profile: React.FC<ProfileProps> = ({ user, medications, logs, onLog
 
       if (Notification.permission === 'granted') {
         onUpdate({ ...user, notificationsEnabled: true });
-        await registerPushToken();
+        const tokenResult = await registerPushToken();
+        if (!tokenResult.ok) {
+          alert(tr(language, `Notification setup failed: ${tokenResult.reason || 'unknown error'}`, `فشل إعداد الإشعارات: ${tokenResult.reason || 'خطأ غير معروف'}`));
+        }
       } else if (Notification.permission !== 'denied') {
         const perm = await Notification.requestPermission();
         if (perm === 'granted') {
           onUpdate({ ...user, notificationsEnabled: true });
-          await registerPushToken();
+          const tokenResult = await registerPushToken();
+          if (!tokenResult.ok) {
+            alert(tr(language, `Notification setup failed: ${tokenResult.reason || 'unknown error'}`, `فشل إعداد الإشعارات: ${tokenResult.reason || 'خطأ غير معروف'}`));
+          }
         } else {
           alert(tr(language, "You need to allow notifications in your browser to receive alerts.", "\u064a\u062c\u0628 \u0627\u0644\u0633\u0645\u0627\u062d \u0628\u0627\u0644\u0625\u0634\u0639\u0627\u0631\u0627\u062a \u0641\u064a \u0627\u0644\u0645\u062a\u0635\u0641\u062d \u0644\u062a\u0644\u0642\u064a \u0627\u0644\u062a\u0646\u0628\u064a\u0647\u0627\u062a."));
         }
@@ -111,10 +121,28 @@ export const Profile: React.FC<ProfileProps> = ({ user, medications, logs, onLog
       return;
     }
     if (Notification.permission === 'granted' && user.notificationsEnabled) {
-      new Notification(tr(language, "Test Notification", "\u0625\u0634\u0639\u0627\u0631 \u062a\u062c\u0631\u064a\u0628\u064a"), {
-        body: tr(language, "This is how your medication alerts will appear.", "\u0647\u0630\u0627 \u0634\u0643\u0644 \u062a\u0646\u0628\u064a\u0647\u0627\u062a \u0627\u0644\u062f\u0648\u0627\u0621 \u0644\u062f\u064a\u0643."),
-        icon: "https://cdn-icons-png.flaticon.com/512/883/883360.png"
-      });
+      const title = tr(language, "Test Notification", "\u0625\u0634\u0639\u0627\u0631 \u062a\u062c\u0631\u064a\u0628\u064a");
+      const body = tr(language, "This is how your medication alerts will appear.", "\u0647\u0630\u0627 \u0634\u0643\u0644 \u062a\u0646\u0628\u064a\u0647\u0627\u062a \u0627\u0644\u062f\u0648\u0627\u0621 \u0644\u062f\u064a\u0643.");
+
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.ready
+          .then((reg) =>
+            reg.showNotification(title, {
+              body,
+              icon: "/icons/icon-192.svg",
+              badge: "/icons/icon-192.svg",
+              requireInteraction: true,
+              renotify: true,
+              tag: "pillcare_test_notification",
+              vibrate: [220, 140, 220, 140, 320]
+            })
+          )
+          .catch(() => {
+            new Notification(title, { body, icon: "/icons/icon-192.svg" });
+          });
+      } else {
+        new Notification(title, { body, icon: "/icons/icon-192.svg" });
+      }
     } else {
       alert(tr(language, "Please enable notifications above first.", "\u064a\u0631\u062c\u0649 \u062a\u0641\u0639\u064a\u0644 \u0627\u0644\u0625\u0634\u0639\u0627\u0631\u0627\u062a \u0623\u0648\u0644\u0627\u064b."));
     }

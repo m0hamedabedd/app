@@ -15,16 +15,38 @@ try {
   });
 
   const messaging = firebase.messaging();
-  messaging.onBackgroundMessage((payload) => {
-    const title = payload.notification?.title || 'Medication Reminder';
-    const body = payload.notification?.body || 'You have a due medication.';
-    const notificationOptions = {
+  const buildNotificationFromPayload = (payload) => {
+    const notification = payload?.notification || {};
+    const data = payload?.data || {};
+    const title = notification.title || data.title || 'Medication Reminder';
+    const body = notification.body || data.body || 'You have a due medication.';
+    const isAlarm = data.alarm === '1' || data.type === 'medication_reminder';
+
+    const options = {
       body,
-      icon: payload.notification?.icon || '/icons/icon-192.svg',
-      badge: '/icons/icon-192.svg',
-      data: payload.data || {}
+      icon: notification.icon || '/icons/icon-192.svg',
+      badge: notification.badge || '/icons/icon-192.svg',
+      tag: notification.tag || (data.reminderKey ? `pillcare_${data.reminderKey}` : 'pillcare_reminder'),
+      renotify: true,
+      requireInteraction: isAlarm || Boolean(notification.requireInteraction),
+      vibrate: isAlarm ? [260, 120, 260, 120, 420] : [180, 120, 180],
+      actions: [{ action: 'open', title: 'Open PillCare' }],
+      data: {
+        ...data,
+        link: data.link || '/#/'
+      }
     };
-    self.registration.showNotification(title, notificationOptions);
+
+    if ('silent' in notification) {
+      options.silent = notification.silent;
+    }
+
+    return { title, options };
+  };
+
+  messaging.onBackgroundMessage((payload) => {
+    const { title, options } = buildNotificationFromPayload(payload || {});
+    self.registration.showNotification(title, options);
   });
 } catch (e) {
   // Firebase messaging may be unavailable in unsupported browsers.
@@ -93,17 +115,60 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+self.addEventListener('push', (event) => {
+  if (!event.data) return;
+
+  let payload = {};
+  try {
+    payload = event.data.json();
+  } catch {
+    payload = {
+      notification: {
+        title: 'Medication Reminder',
+        body: event.data.text()
+      }
+    };
+  }
+
+  const notification = payload.notification || {};
+  const data = payload.data || {};
+  const isAlarm = data.alarm === '1' || data.type === 'medication_reminder';
+  const title = notification.title || data.title || 'Medication Reminder';
+  const body = notification.body || data.body || 'You have a due medication.';
+
+  const options = {
+    body,
+    icon: notification.icon || '/icons/icon-192.svg',
+    badge: notification.badge || '/icons/icon-192.svg',
+    tag: notification.tag || (data.reminderKey ? `pillcare_${data.reminderKey}` : 'pillcare_reminder'),
+    renotify: true,
+    requireInteraction: isAlarm || Boolean(notification.requireInteraction),
+    vibrate: isAlarm ? [260, 120, 260, 120, 420] : [180, 120, 180],
+    actions: [{ action: 'open', title: 'Open PillCare' }],
+    data: {
+      ...data,
+      link: data.link || '/#/'
+    }
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const targetPath = event.notification?.data?.link || '/#/';
+  const targetUrl = new URL(targetPath, self.location.origin).toString();
+
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
       for (const client of clientList) {
-        if ('focus' in client) {
+        const sameAppWindow = client.url.startsWith(self.location.origin);
+        if (sameAppWindow && 'focus' in client) {
           return client.focus();
         }
       }
       if (clients.openWindow) {
-        return clients.openWindow('/#/');
+        return clients.openWindow(targetUrl);
       }
       return undefined;
     })

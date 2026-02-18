@@ -31,46 +31,79 @@ const sanitizeForFirebase = (data: any) => {
 const toSafeKey = (input: string) =>
   btoa(unescape(encodeURIComponent(input))).replace(/[./#[\]$+=]/g, "_");
 
+const getConfiguredVapidKey = () =>
+  String(import.meta.env.VITE_FIREBASE_VAPID_KEY || '').trim();
+
+export type WebPushSupportStatus = {
+  supported: boolean;
+  reason: 'ok' | 'unsupported-browser' | 'missing-vapid-key';
+};
+
+export type PushTokenRegistrationResult = {
+  ok: boolean;
+  reason?: string;
+};
+
+export const getWebPushSupportStatus = async (): Promise<WebPushSupportStatus> => {
+  if (typeof window === 'undefined') {
+    return { supported: false, reason: 'unsupported-browser' };
+  }
+  if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return { supported: false, reason: 'unsupported-browser' };
+  }
+  const supported = await isSupported().catch(() => false);
+  if (!supported) {
+    return { supported: false, reason: 'unsupported-browser' };
+  }
+  if (!getConfiguredVapidKey()) {
+    return { supported: false, reason: 'missing-vapid-key' };
+  }
+  return { supported: true, reason: 'ok' };
+};
+
 export const registerPushToken = async () => {
   const uid = auth.currentUser?.uid;
-  if (!uid) return;
-  if (typeof window === 'undefined') return;
-  if (!('Notification' in window)) return;
-  if (Notification.permission !== 'granted') return;
+  if (!uid) return { ok: false, reason: 'not-authenticated' } satisfies PushTokenRegistrationResult;
+  if (typeof window === 'undefined') return { ok: false, reason: 'unsupported-browser' } satisfies PushTokenRegistrationResult;
+  if (!('Notification' in window)) return { ok: false, reason: 'unsupported-browser' } satisfies PushTokenRegistrationResult;
+  if (Notification.permission !== 'granted') return { ok: false, reason: 'permission-not-granted' } satisfies PushTokenRegistrationResult;
 
-  const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY as string | undefined;
+  const support = await getWebPushSupportStatus();
+  if (!support.supported) return { ok: false, reason: support.reason } satisfies PushTokenRegistrationResult;
+
+  const vapidKey = getConfiguredVapidKey();
   if (!vapidKey) {
     console.warn("Missing VITE_FIREBASE_VAPID_KEY. Push token registration skipped.");
-    return;
+    return { ok: false, reason: 'missing-vapid-key' } satisfies PushTokenRegistrationResult;
   }
 
-  const supported = await isSupported().catch(() => false);
-  if (!supported) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const messaging = getMessaging(modularApp);
+    const token = await getToken(messaging, {
+      vapidKey,
+      serviceWorkerRegistration: registration
+    });
 
-  const registration = await navigator.serviceWorker.ready;
-  const messaging = getMessaging(modularApp);
-  const token = await getToken(messaging, {
-    vapidKey,
-    serviceWorkerRegistration: registration
-  });
+    if (!token) return { ok: false, reason: 'token-unavailable' } satisfies PushTokenRegistrationResult;
 
-  if (!token) return;
-
-  const tokenKey = toSafeKey(token);
-  const tokenRef = db.ref(`users/${uid}/fcmTokens/${tokenKey}`);
-  await tokenRef.set(sanitizeForFirebase({
-    token,
-    updatedAt: Date.now(),
-    platform: "web"
-  }));
+    const tokenKey = toSafeKey(token);
+    const tokenRef = db.ref(`users/${uid}/fcmTokens/${tokenKey}`);
+    await tokenRef.set(sanitizeForFirebase({
+      token,
+      updatedAt: Date.now(),
+      platform: "web"
+    }));
+    return { ok: true } satisfies PushTokenRegistrationResult;
+  } catch (error: any) {
+    console.error("Push token registration failed:", error);
+    return { ok: false, reason: error?.message || 'registration-failed' } satisfies PushTokenRegistrationResult;
+  }
 };
 
 export const isWebPushSupported = async () => {
-  if (typeof window === 'undefined') return false;
-  if (!('Notification' in window)) return false;
-  if (!('serviceWorker' in navigator)) return false;
-  if (!('PushManager' in window)) return false;
-  return await isSupported().catch(() => false);
+  const status = await getWebPushSupportStatus();
+  return status.supported;
 };
 
 export const listenForForegroundPush = async (

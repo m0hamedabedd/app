@@ -9,7 +9,7 @@ import { History } from './pages/History';
 import { Reports } from './pages/Reports';
 import { AuthPage } from './pages/Auth';
 import { Medication, UserProfile, LogEntry, AppNotification } from './types';
-import { syncDispenserConfig, sendDispenseCommand, syncLogs, listenToData, auth, saveUserProfile, registerPushToken, listenForForegroundPush, saveUserTimezone, isWebPushSupported } from './services/firebase';
+import { syncDispenserConfig, sendDispenseCommand, syncLogs, listenToData, auth, saveUserProfile, registerPushToken, listenForForegroundPush, saveUserTimezone, getWebPushSupportStatus } from './services/firebase';
 import { resolveLanguage, tr } from './services/i18n';
 
 // Mock Data Structure
@@ -56,6 +56,7 @@ const App: React.FC = () => {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [showNotifPrompt, setShowNotifPrompt] = useState(false);
   const [pushSupported, setPushSupported] = useState<boolean | null>(null);
+  const [pushSupportReason, setPushSupportReason] = useState<string>('ok');
   const [isIosDevice, setIsIosDevice] = useState(false);
   const [isStandaloneMode, setIsStandaloneMode] = useState(false);
 
@@ -95,6 +96,7 @@ const App: React.FC = () => {
         setSnoozedMeds({});
         setShowNotifPrompt(false);
         setPushSupported(null);
+        setPushSupportReason('ok');
 
         // Only clear local caches when user explicitly logs out.
         if (loggingOutRef.current && previousUid) {
@@ -225,18 +227,25 @@ const App: React.FC = () => {
         void ctx.resume();
       }
 
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = sound === 'Beep' ? 'square' : 'sine';
+      const wave = sound === 'Beep' ? 'square' : 'sine';
       const freq = sound === 'Beep' ? 760 : 880;
-      osc.frequency.setValueAtTime(freq, ctx.currentTime);
-      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + (sound === 'Beep' ? 0.18 : 0.35));
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + (sound === 'Beep' ? 0.2 : 0.36));
+      const pulseDuration = sound === 'Beep' ? 0.2 : 0.36;
+      const startOffsets = sound === 'Beep' ? [0, 0.28, 0.56] : [0, 0.42];
+
+      startOffsets.forEach((offset) => {
+        const startAt = ctx.currentTime + offset;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = wave;
+        osc.frequency.setValueAtTime(freq, startAt);
+        gain.gain.setValueAtTime(0.0001, startAt);
+        gain.gain.exponentialRampToValueAtTime(0.085, startAt + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, startAt + pulseDuration - 0.02);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(startAt);
+        osc.stop(startAt + pulseDuration);
+      });
     } catch (e) {
       console.error("Failed to play reminder sound", e);
     }
@@ -252,7 +261,10 @@ const App: React.FC = () => {
       tag: `pillcare-${title}`,
       renotify: true,
       requireInteraction: true,
-      vibrate: [180, 120, 180]
+      vibrate: [260, 120, 260, 120, 420],
+      data: {
+        link: '/#/'
+      }
     };
 
     try {
@@ -382,17 +394,39 @@ const App: React.FC = () => {
     });
   };
 
+  const pushSetupHint = (reason?: string) => {
+    if (reason === 'missing-vapid-key') {
+      return "Push is not fully configured on this build. Missing VITE_FIREBASE_VAPID_KEY.";
+    }
+    if (reason === 'unsupported-browser') {
+      return "This device/browser cannot receive web push in the current app mode.";
+    }
+    if (reason === 'permission-not-granted') {
+      return "Browser notification permission is not granted yet.";
+    }
+    return "Push setup is incomplete. Re-enable notifications from Settings and try again.";
+  };
+
+  const registerPushTokenWithFeedback = async (showWarning: boolean) => {
+    const result = await registerPushToken();
+    if (!result.ok && showWarning) {
+      addNotification('Reminder Setup Needed', pushSetupHint(result.reason), 'warning');
+    }
+    return result;
+  };
+
   const bootstrapNotifications = async () => {
     if (!currentUser) return;
 
-    const supported = await isWebPushSupported();
-    setPushSupported(supported);
+    const support = await getWebPushSupportStatus();
+    setPushSupported(support.supported);
+    setPushSupportReason(support.reason);
 
     const hiddenByUser = localStorage.getItem(NOTIF_PROMPT_HIDE_KEY) === '1';
     const bootstrapKey = `${NOTIF_BOOTSTRAP_KEY}_${currentUser.uid}`;
     const alreadyBootstrapped = localStorage.getItem(bootstrapKey) === '1';
 
-    if (!supported) {
+    if (!support.supported) {
       setShowNotifPrompt(!hiddenByUser);
       return;
     }
@@ -404,7 +438,10 @@ const App: React.FC = () => {
       }
       setShowNotifPrompt(false);
       if (!alreadyBootstrapped || user.notificationsEnabled) {
-        await registerPushToken();
+        const tokenResult = await registerPushTokenWithFeedback(true);
+        if (!tokenResult.ok) {
+          setShowNotifPrompt(true);
+        }
       }
       return;
     }
@@ -415,7 +452,11 @@ const App: React.FC = () => {
       if (perm === 'granted') {
         setNotificationsEnabled(true);
         setShowNotifPrompt(false);
-        await registerPushToken();
+        const tokenResult = await registerPushTokenWithFeedback(true);
+        if (!tokenResult.ok) {
+          setShowNotifPrompt(true);
+          return;
+        }
         addNotification('Notifications Enabled', 'Medication reminders will now alert you on this device.', 'success');
         return;
       }
@@ -431,7 +472,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!currentUser || !user.notificationsEnabled) return;
-    void registerPushToken();
+    void registerPushTokenWithFeedback(false);
   }, [currentUser, user.notificationsEnabled]);
 
   useEffect(() => {
@@ -489,13 +530,14 @@ const App: React.FC = () => {
 
   const handleEnableNotificationsFromPrompt = async () => {
     if (!currentUser) return;
-    const supported = await isWebPushSupported();
-    setPushSupported(supported);
+    const support = await getWebPushSupportStatus();
+    setPushSupported(support.supported);
+    setPushSupportReason(support.reason);
 
-    if (!supported) {
+    if (!support.supported) {
       addNotification(
-        "Push Not Supported",
-        "This device/browser cannot receive web push here. On iPhone, install to Home Screen and open the installed app.",
+        "Push Setup Needed",
+        pushSetupHint(support.reason),
         'warning'
       );
       return;
@@ -507,7 +549,11 @@ const App: React.FC = () => {
       setShowNotifPrompt(false);
       localStorage.removeItem(NOTIF_PROMPT_HIDE_KEY);
       localStorage.setItem(`${NOTIF_BOOTSTRAP_KEY}_${currentUser.uid}`, '1');
-      await registerPushToken();
+      const tokenResult = await registerPushTokenWithFeedback(true);
+      if (!tokenResult.ok) {
+        setShowNotifPrompt(true);
+        return;
+      }
       addNotification('Notifications Enabled', 'You will receive reminders even when the app is not open.', 'success');
       return;
     }
@@ -765,7 +811,13 @@ const App: React.FC = () => {
                 </p>
                 {pushSupported === false && (
                   <p className="mt-2 text-xs text-amber-800">
-                    {isIosDevice && !isStandaloneMode
+                    {pushSupportReason === 'missing-vapid-key'
+                      ? tr(
+                          language,
+                          "Push is not configured yet for this deployment. Add VITE_FIREBASE_VAPID_KEY in your environment variables, then redeploy.",
+                          "Push غير مهيأ بعد لهذا الإصدار. أضف VITE_FIREBASE_VAPID_KEY في متغيرات البيئة ثم أعد النشر."
+                        )
+                      : isIosDevice && !isStandaloneMode
                       ? tr(
                           language,
                           "On iPhone, open this site in Safari, tap Share, then Add to Home Screen. Open the installed app and allow notifications.",
