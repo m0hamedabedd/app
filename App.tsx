@@ -832,6 +832,7 @@ const App: React.FC = () => {
                 userAllergies={user.allergies}
                 userConditions={user.conditions}
                 language={language}
+                userId={currentUser?.uid}
             />
           } />
           <Route path="/history" element={<History logs={logs} />} />

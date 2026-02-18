@@ -14,6 +14,7 @@ interface InteractionsProps {
   userAllergies: string[];
   userConditions: string[];
   language?: 'en' | 'ar';
+  userId?: string;
 }
 
 type AssistantMode = 'chat' | 'safety';
@@ -25,9 +26,9 @@ interface ChatBubble {
   createdAt: number;
 }
 
-const CHAT_STORAGE_KEY = 'pillcare_ai_chat_history_v2';
-const MODE_STORAGE_KEY = 'pillcare_ai_mode_v1';
-const SAFETY_STORAGE_KEY = 'pillcare_ai_safety_state_v1';
+const CHAT_STORAGE_KEY_BASE = 'pillcare_ai_chat_history_v2';
+const MODE_STORAGE_KEY_BASE = 'pillcare_ai_mode_v1';
+const SAFETY_STORAGE_KEY_BASE = 'pillcare_ai_safety_state_v1';
 
 const makeId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -64,7 +65,8 @@ export const Interactions: React.FC<InteractionsProps> = ({
   medications,
   userAllergies,
   userConditions,
-  language = 'en'
+  language = 'en',
+  userId
 }) => {
   const lang = resolveLanguage(language);
   const [mode, setMode] = useState<AssistantMode>('chat');
@@ -90,14 +92,27 @@ export const Interactions: React.FC<InteractionsProps> = ({
     );
   }, [medications.length, lang]);
 
+  const storageScope = useMemo(() => (userId && userId.trim().length > 0 ? userId : 'anonymous'), [userId]);
+  const chatStorageKey = useMemo(() => `${CHAT_STORAGE_KEY_BASE}_${storageScope}`, [storageScope]);
+  const modeStorageKey = useMemo(() => `${MODE_STORAGE_KEY_BASE}_${storageScope}`, [storageScope]);
+  const safetyStorageKey = useMemo(() => `${SAFETY_STORAGE_KEY_BASE}_${storageScope}`, [storageScope]);
+
   useEffect(() => {
+    setStorageHydrated(false);
+    setMode('chat');
+    setChatMessages([]);
+    setChatInput('');
+    setAnalysisResult(null);
+    setAnalysisError(null);
+    setLastAnalysisAt(null);
+
     try {
-      const storedMode = localStorage.getItem(MODE_STORAGE_KEY);
+      const storedMode = localStorage.getItem(modeStorageKey);
       if (storedMode === 'chat' || storedMode === 'safety') {
         setMode(storedMode);
       }
 
-      const storedChat = localStorage.getItem(CHAT_STORAGE_KEY);
+      const storedChat = localStorage.getItem(chatStorageKey);
       if (storedChat) {
         const parsed = JSON.parse(storedChat) as ChatBubble[];
         if (Array.isArray(parsed)) {
@@ -108,7 +123,7 @@ export const Interactions: React.FC<InteractionsProps> = ({
         }
       }
 
-      const storedSafety = localStorage.getItem(SAFETY_STORAGE_KEY);
+      const storedSafety = localStorage.getItem(safetyStorageKey);
       if (storedSafety) {
         const parsed = JSON.parse(storedSafety) as {
           analysisResult?: DrugInteractionAnalysis | null;
@@ -146,7 +161,7 @@ export const Interactions: React.FC<InteractionsProps> = ({
     } finally {
       setStorageHydrated(true);
     }
-  }, []);
+  }, [chatStorageKey, modeStorageKey, safetyStorageKey]);
 
   useEffect(() => {
     if (!storageHydrated) return;
@@ -176,25 +191,25 @@ export const Interactions: React.FC<InteractionsProps> = ({
   useEffect(() => {
     if (!storageHydrated) return;
     if (chatMessages.length === 0) return;
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatMessages));
-  }, [chatMessages, storageHydrated]);
+    localStorage.setItem(chatStorageKey, JSON.stringify(chatMessages));
+  }, [chatMessages, storageHydrated, chatStorageKey]);
 
   useEffect(() => {
     if (!storageHydrated) return;
-    localStorage.setItem(MODE_STORAGE_KEY, mode);
-  }, [mode, storageHydrated]);
+    localStorage.setItem(modeStorageKey, mode);
+  }, [mode, storageHydrated, modeStorageKey]);
 
   useEffect(() => {
     if (!storageHydrated) return;
     localStorage.setItem(
-      SAFETY_STORAGE_KEY,
+      safetyStorageKey,
       JSON.stringify({
         analysisResult,
         analysisError,
         lastAnalysisAt
       })
     );
-  }, [analysisResult, analysisError, lastAnalysisAt, storageHydrated]);
+  }, [analysisResult, analysisError, lastAnalysisAt, storageHydrated, safetyStorageKey]);
 
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -247,7 +262,7 @@ export const Interactions: React.FC<InteractionsProps> = ({
   };
 
   const clearChatHistory = () => {
-    localStorage.removeItem(CHAT_STORAGE_KEY);
+    localStorage.removeItem(chatStorageKey);
     setChatMessages([
       {
         id: 'welcome',
