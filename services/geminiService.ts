@@ -2,6 +2,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { Medication } from "../types";
 
 const geminiApiKey =
+  import.meta.env.VITE_GEMINI_API_KEY ||
   process.env.API_KEY ||
   process.env.GEMINI_API_KEY ||
   "";
@@ -11,14 +12,10 @@ const CHAT_RECENT_WINDOW = 12;
 const CHAT_OLDER_DIGEST_LIMIT = 16;
 const CHAT_LINE_MAX_CHARS = 120;
 const CHAT_TIMEOUT_MS = 8000;
-const SAFETY_FLASH_TIMEOUT_MS = 10000;
-const SAFETY_PRO_TIMEOUT_MS = 12000;
+const SAFETY_TIMEOUT_MS = 12000;
 const CHAT_PRIMARY_MODEL = 'gemini-2.5-flash';
 const CHAT_FALLBACK_MODEL = 'gemini-2.5-flash-lite';
-const SAFETY_FAST_MODEL = 'gemini-2.5-flash';
-const SAFETY_FAST_FALLBACK_MODEL = 'gemini-2.5-flash-lite';
-const SAFETY_PRO_MODEL = 'gemini-2.5-pro';
-const SAFETY_PRO_FALLBACK_MODEL = 'gemini-2.5-flash';
+const SAFETY_MODEL_SEQUENCE = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 
 export type InteractionSeverity = 'High' | 'Moderate' | 'Low' | 'None';
 
@@ -98,6 +95,14 @@ const toFriendlyAiError = (error: unknown): string => {
   if (msg.includes('timed out')) {
     return "AI is taking too long right now. Please retry.";
   }
+  if (
+    msg.includes('429') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('quota') ||
+    msg.includes('rate limit')
+  ) {
+    return "AI usage limit reached for now. Please retry shortly, or upgrade Gemini quota/billing.";
+  }
   if (msg.includes('401') || msg.includes('403') || msg.includes('permission') || msg.includes('api key')) {
     return "AI access failed (API key or restrictions). Check Gemini key permissions and allowed origins.";
   }
@@ -148,6 +153,72 @@ const sanitizeInteractionResult = (parsed: Partial<DrugInteractionAnalysis>): Dr
         ? item.drugs.filter((d: unknown) => typeof d === 'string')
         : []
     }))
+  };
+};
+
+const isUsefulSafetyResult = (result: DrugInteractionAnalysis) => {
+  if (result.interactions.length > 0) return true;
+  if (!result.summary) return false;
+  return result.summary.trim().toLowerCase() !== 'no analysis summary returned.';
+};
+
+const extractErrorText = (error: unknown) => {
+  const e = error as any;
+  return String(
+    e?.message ||
+    e?.error?.message ||
+    e?.statusText ||
+    (typeof e === 'string' ? e : '')
+  ).toLowerCase();
+};
+
+const localSafetyFallback = (
+  medications: Medication[],
+  allergies: string[],
+  reason?: string
+): DrugInteractionAnalysis => {
+  const interactions: InteractionItem[] = [];
+  const allergyTerms = allergies.map((a) => a.trim().toLowerCase()).filter(Boolean);
+  const medNames = medications.map((m) => m.name.trim()).filter(Boolean);
+  const medNamesLower = medNames.map((n) => n.toLowerCase());
+
+  const duplicates = medNamesLower.filter((name, idx, arr) => arr.indexOf(name) !== idx);
+  if (duplicates.length > 0) {
+    const uniqueDupes = Array.from(new Set(duplicates));
+    interactions.push({
+      severity: 'Moderate',
+      description: 'Possible duplicate medication names detected. Verify that duplicate entries are intentional to avoid double-dosing.',
+      drugs: uniqueDupes
+    });
+  }
+
+  if (allergyTerms.length > 0) {
+    medications.forEach((med) => {
+      const medName = String(med.name || '').toLowerCase();
+      if (!medName) return;
+      const hit = allergyTerms.find((term) => term.length >= 3 && medName.includes(term));
+      if (hit) {
+        interactions.push({
+          severity: 'High',
+          description: `Medication name appears related to listed allergy "${hit}". Confirm safety with a licensed clinician before use.`,
+          drugs: [med.name]
+        });
+      }
+    });
+  }
+
+  if (interactions.length === 0) {
+    interactions.push({
+      severity: 'None',
+      description: 'No obvious conflicts detected in this quick fallback check. Run AI analysis again when quota/network is available.',
+      drugs: medNames.slice(0, 4)
+    });
+  }
+
+  const reasonText = reason ? ` AI detail check is temporarily unavailable (${reason}).` : '';
+  return {
+    summary: `Quick safety fallback generated from current medication/allergy list.${reasonText}`,
+    interactions
   };
 };
 
@@ -287,7 +358,24 @@ Rules:
 - Keep descriptions concise and clinically professional.
   `;
 
-  const runModel = async (model: string, timeoutMs: number) => {
+  const strictJsonPrompt = `
+${prompt}
+
+Return strictly as valid JSON with this shape:
+{
+  "summary": "short clinical overview",
+  "interactions": [
+    {
+      "severity": "High|Moderate|Low|None",
+      "description": "short risk statement",
+      "drugs": ["drug A", "drug B"]
+    }
+  ]
+}
+No markdown. No extra keys.
+  `;
+
+  const runStructuredModel = async (model: string, timeoutMs: number) => {
     const response = await withTimeout(ai.models.generateContent({
       model,
       contents: prompt,
@@ -302,31 +390,47 @@ Rules:
     return sanitizeInteractionResult(parsed);
   };
 
-  try {
-    // Fast-first path for better UX.
-    return await runModel(SAFETY_FAST_MODEL, SAFETY_FLASH_TIMEOUT_MS);
-  } catch (error) {
-    try {
-      // Fast fallback model.
-      return await runModel(SAFETY_FAST_FALLBACK_MODEL, SAFETY_FLASH_TIMEOUT_MS);
-    } catch (fallbackError) {
-      try {
-        // Higher-accuracy fallback.
-        return await runModel(SAFETY_PRO_MODEL, SAFETY_PRO_TIMEOUT_MS);
-      } catch (proError) {
-        try {
-          // Pro backup model.
-          return await runModel(SAFETY_PRO_FALLBACK_MODEL, SAFETY_PRO_TIMEOUT_MS);
-        } catch (proFallbackError) {
-          console.error("Error analyzing interactions:", error, fallbackError, proError, proFallbackError);
-          return {
-            summary: toFriendlyAiError(proFallbackError),
-            interactions: []
-          };
-        }
+  const runLooseJsonModel = async (model: string, timeoutMs: number) => {
+    const response = await withTimeout(ai.models.generateContent({
+      model,
+      contents: strictJsonPrompt,
+      config: {
+        responseMimeType: "application/json",
+        temperature: 0.1,
+        maxOutputTokens: 500
       }
+    }), timeoutMs, `${model} safety loose-json`);
+
+    const raw = response.text || '{}';
+    const parsed = parseJsonResponse<Partial<DrugInteractionAnalysis>>(raw) || {};
+    return sanitizeInteractionResult(parsed);
+  };
+
+  let lastError: unknown = null;
+  for (const model of SAFETY_MODEL_SEQUENCE) {
+    try {
+      const structured = await runStructuredModel(model, SAFETY_TIMEOUT_MS);
+      if (isUsefulSafetyResult(structured)) return structured;
+    } catch (structuredError) {
+      lastError = structuredError;
+    }
+
+    try {
+      const loose = await runLooseJsonModel(model, SAFETY_TIMEOUT_MS);
+      if (isUsefulSafetyResult(loose)) return loose;
+    } catch (looseError) {
+      lastError = looseError;
     }
   }
+
+  console.error("Error analyzing interactions:", lastError);
+  const rawReason = extractErrorText(lastError);
+  const reasonLabel =
+    rawReason.includes('quota') || rawReason.includes('resource_exhausted') || rawReason.includes('429')
+      ? 'Gemini quota reached'
+      : toFriendlyAiError(lastError);
+
+  return localSafetyFallback(medications, allergies, reasonLabel);
 };
 
 // Helper to convert blob/file to base64
