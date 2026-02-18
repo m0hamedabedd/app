@@ -8,8 +8,9 @@ import { Profile } from './pages/Profile';
 import { History } from './pages/History';
 import { Reports } from './pages/Reports';
 import { AuthPage } from './pages/Auth';
-import { Medication, UserProfile, LogEntry, DosageForm, AppNotification } from './types';
-import { syncDispenserConfig, sendDispenseCommand, syncLogs, listenToData, auth, saveUserProfile, registerPushToken, listenForForegroundPush, saveUserTimezone } from './services/firebase';
+import { Medication, UserProfile, LogEntry, AppNotification } from './types';
+import { syncDispenserConfig, sendDispenseCommand, syncLogs, listenToData, auth, saveUserProfile, registerPushToken, listenForForegroundPush, saveUserTimezone, isWebPushSupported } from './services/firebase';
+import { resolveLanguage, tr } from './services/i18n';
 
 // Mock Data Structure
 const MOCK_USER: UserProfile = {
@@ -18,19 +19,42 @@ const MOCK_USER: UserProfile = {
   conditions: ["Hypertension", "Asthma"],
   allergies: ["Penicillin", "Peanuts"],
   emergencyContact: "+1 (555) 012-3456",
-  notificationsEnabled: false
+  notificationsEnabled: false,
+  snoozeDurationMinutes: 15,
+  notificationSound: 'Chime',
+  appearance: 'Light',
+  language: 'en'
 };
 
 const DISPENSE_WINDOW_MINUTES = 15;
+const NOTIF_BOOTSTRAP_KEY = 'pillcare_notif_bootstrap_v1';
+const NOTIF_PROMPT_HIDE_KEY = 'pillcare_notif_prompt_hide_v1';
+
+const normalizeUserProfile = (incoming?: Partial<UserProfile>): UserProfile => {
+  const profile = { ...MOCK_USER, ...(incoming || {}) };
+  return {
+    ...profile,
+    conditions: Array.isArray(profile.conditions) ? profile.conditions : [],
+    allergies: Array.isArray(profile.allergies) ? profile.allergies : [],
+    snoozeDurationMinutes: profile.snoozeDurationMinutes || 15,
+    notificationSound: profile.notificationSound || 'Chime',
+    appearance: profile.appearance || 'Light',
+    language: profile.language || 'en'
+  };
+};
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
 
-  const [user, setUser] = useState<UserProfile>(MOCK_USER);
+  const [user, setUser] = useState<UserProfile>(normalizeUserProfile(MOCK_USER));
   const [medications, setMedications] = useState<Medication[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [showNotifPrompt, setShowNotifPrompt] = useState(false);
+  const [pushSupported, setPushSupported] = useState<boolean | null>(null);
+  const [isIosDevice, setIsIosDevice] = useState(false);
+  const [isStandaloneMode, setIsStandaloneMode] = useState(false);
 
   const [snoozedMeds, setSnoozedMeds] = useState<{ [key: string]: number }>({});
   
@@ -57,8 +81,10 @@ const App: React.FC = () => {
         setMedications([]);
         setLogs([]);
         setNotifications([]);
-        setUser(MOCK_USER);
+        setUser(normalizeUserProfile(MOCK_USER));
         setSnoozedMeds({});
+        setShowNotifPrompt(false);
+        setPushSupported(null);
         localStorage.removeItem('pillcare_meds');
         localStorage.removeItem('pillcare_logs');
       }
@@ -79,7 +105,7 @@ const App: React.FC = () => {
                 localStorage.setItem('pillcare_logs', JSON.stringify(fetchedLogs || []));
             },
             (fetchedProfile) => {
-                setUser(prev => ({ ...prev, ...fetchedProfile }));
+                setUser(prev => normalizeUserProfile({ ...prev, ...fetchedProfile }));
             }
         );
         return () => unsubscribe();
@@ -88,11 +114,11 @@ const App: React.FC = () => {
 
   // Sync Logic
   useEffect(() => {
-    if (currentUser && medications.length > 0) syncDispenserConfig(medications);
+    if (currentUser) syncDispenserConfig(medications);
   }, [medications, currentUser]);
 
   useEffect(() => {
-    if (currentUser && logs.length > 0) syncLogs(logs);
+    if (currentUser) syncLogs(logs);
   }, [logs, currentUser]);
 
   // --- Notification System ---
@@ -109,7 +135,8 @@ const App: React.FC = () => {
       setNotifications(prev => [newNotif, ...prev]);
   };
 
-  const playReminderSound = () => {
+  const playReminderSound = (sound: UserProfile['notificationSound']) => {
+    if (!sound || sound === 'Off') return;
     try {
       const AudioCtor = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext | undefined;
       if (!AudioCtor) return;
@@ -121,15 +148,16 @@ const App: React.FC = () => {
 
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.type = sound === 'Beep' ? 'square' : 'sine';
+      const freq = sound === 'Beep' ? 760 : 880;
+      osc.frequency.setValueAtTime(freq, ctx.currentTime);
       gain.gain.setValueAtTime(0.0001, ctx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + (sound === 'Beep' ? 0.18 : 0.35));
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start();
-      osc.stop(ctx.currentTime + 0.36);
+      osc.stop(ctx.currentTime + (sound === 'Beep' ? 0.2 : 0.36));
     } catch (e) {
       console.error("Failed to play reminder sound", e);
     }
@@ -171,6 +199,13 @@ const App: React.FC = () => {
     return dt;
   };
 
+  const isMedicationScheduledToday = (med: Medication, now: Date = new Date()) => {
+    if (med.isActive === false) return false;
+    const cycleDays = med.cycleDays;
+    if (!cycleDays || cycleDays.length === 0) return true;
+    return cycleDays.includes(now.getDay());
+  };
+
   const triggerReminder = (
     title: string,
     message: string,
@@ -184,7 +219,7 @@ const App: React.FC = () => {
       void sendBrowserNotification(title, message);
     }
 
-    playReminderSound();
+    playReminderSound(user.notificationSound);
   };
 
   // Periodic Reminder Check (Every 60s)
@@ -204,6 +239,7 @@ const App: React.FC = () => {
         }
 
         medications.forEach(med => {
+            if (!isMedicationScheduledToday(med, now)) return;
             if (med.frequencyType !== 'Daily' || !med.scheduledTimes?.length) return;
 
             med.scheduledTimes.forEach(time => {
@@ -249,12 +285,70 @@ const App: React.FC = () => {
     return () => clearInterval(timer);
   }, [medications, currentUser, user.notificationsEnabled, snoozedMeds]);
 
-  // Initial Permission Request
   useEffect(() => {
-    // We do NOT automatically request permission here anymore if we want the user to control it via Profile
-    // However, if already granted, we can assume we are good.
-    // If we want to prompt early, we can, but let's stick to user-initiated in Profile for better UX.
+    if (typeof window === 'undefined') return;
+    const ua = window.navigator.userAgent || '';
+    const iOS = /iPad|iPhone|iPod/.test(ua) || (window.navigator.platform === 'MacIntel' && window.navigator.maxTouchPoints > 1);
+    const standalone = window.matchMedia?.('(display-mode: standalone)').matches || (window.navigator as any).standalone === true;
+    setIsIosDevice(iOS);
+    setIsStandaloneMode(Boolean(standalone));
   }, []);
+
+  const setNotificationsEnabled = (enabled: boolean) => {
+    setUser(prev => {
+      if (Boolean(prev.notificationsEnabled) === enabled) return prev;
+      const next = { ...prev, notificationsEnabled: enabled };
+      if (currentUser) saveUserProfile(next);
+      return next;
+    });
+  };
+
+  const bootstrapNotifications = async () => {
+    if (!currentUser) return;
+
+    const supported = await isWebPushSupported();
+    setPushSupported(supported);
+
+    const hiddenByUser = localStorage.getItem(NOTIF_PROMPT_HIDE_KEY) === '1';
+    const bootstrapKey = `${NOTIF_BOOTSTRAP_KEY}_${currentUser.uid}`;
+    const alreadyBootstrapped = localStorage.getItem(bootstrapKey) === '1';
+
+    if (!supported) {
+      setShowNotifPrompt(!hiddenByUser);
+      return;
+    }
+
+    if (Notification.permission === 'granted') {
+      if (!alreadyBootstrapped) {
+        localStorage.setItem(bootstrapKey, '1');
+        setNotificationsEnabled(true);
+      }
+      setShowNotifPrompt(false);
+      if (!alreadyBootstrapped || user.notificationsEnabled) {
+        await registerPushToken();
+      }
+      return;
+    }
+
+    if (!alreadyBootstrapped) {
+      localStorage.setItem(bootstrapKey, '1');
+      const perm = await Notification.requestPermission();
+      if (perm === 'granted') {
+        setNotificationsEnabled(true);
+        setShowNotifPrompt(false);
+        await registerPushToken();
+        addNotification('Notifications Enabled', 'Medication reminders will now alert you on this device.', 'success');
+        return;
+      }
+    }
+
+    setShowNotifPrompt(!hiddenByUser);
+  };
+
+  useEffect(() => {
+    if (!currentUser) return;
+    void bootstrapNotifications();
+  }, [currentUser]);
 
   useEffect(() => {
     if (!currentUser || !user.notificationsEnabled) return;
@@ -270,7 +364,7 @@ const App: React.FC = () => {
         const title = payload.notification?.title || "Medication Reminder";
         const body = payload.notification?.body || "You have a due medication.";
         addNotification(title, body, 'reminder');
-        playReminderSound();
+        playReminderSound(user.notificationSound);
       });
     };
 
@@ -278,7 +372,24 @@ const App: React.FC = () => {
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, [currentUser]);
+  }, [currentUser, user.notificationSound]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+
+    const appearance = user.appearance || 'Light';
+    const systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const useDark = appearance === 'Dark' || (appearance === 'System' && systemDark);
+
+    document.body.classList.toggle('theme-dark', useDark);
+  }, [user.appearance]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const language = user.language || 'en';
+    document.documentElement.lang = language;
+    document.documentElement.dir = language === 'ar' ? 'rtl' : 'ltr';
+  }, [user.language]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -297,17 +408,64 @@ const App: React.FC = () => {
       setNotifications([]);
   };
 
+  const handleEnableNotificationsFromPrompt = async () => {
+    if (!currentUser) return;
+    const supported = await isWebPushSupported();
+    setPushSupported(supported);
+
+    if (!supported) {
+      addNotification(
+        "Push Not Supported",
+        "This device/browser cannot receive web push here. On iPhone, install to Home Screen and open the installed app.",
+        'warning'
+      );
+      return;
+    }
+
+    const perm = await Notification.requestPermission();
+    if (perm === 'granted') {
+      setNotificationsEnabled(true);
+      setShowNotifPrompt(false);
+      localStorage.removeItem(NOTIF_PROMPT_HIDE_KEY);
+      localStorage.setItem(`${NOTIF_BOOTSTRAP_KEY}_${currentUser.uid}`, '1');
+      await registerPushToken();
+      addNotification('Notifications Enabled', 'You will receive reminders even when the app is not open.', 'success');
+      return;
+    }
+
+    setShowNotifPrompt(true);
+    addNotification('Notifications Blocked', 'Allow notifications in browser settings to get reminders.', 'warning');
+  };
+
+  const handleHideNotificationPrompt = () => {
+    setShowNotifPrompt(false);
+    localStorage.setItem(NOTIF_PROMPT_HIDE_KEY, '1');
+  };
+
   // --- Handlers ---
 
   const handleAddMedication = (med: Medication) => {
-    const newMeds = [...medications, med];
+    const normalizedMed: Medication = {
+      ...med,
+      isActive: med.isActive !== false,
+      cycleDays: med.cycleDays && med.cycleDays.length > 0 ? med.cycleDays : [0, 1, 2, 3, 4, 5, 6],
+      stomachCondition: med.stomachCondition || 'Any'
+    };
+
+    const newMeds = [...medications, normalizedMed];
     setMedications(newMeds);
     syncDispenserConfig(newMeds);
-    addNotification('Medication Added', `${med.name} has been added to your schedule.`, 'success');
+    addNotification('Medication Added', `${normalizedMed.name} has been added to your schedule.`, 'success');
   };
 
   const handleUpdateMedication = (updatedMed: Medication) => {
-    const newMeds = medications.map(m => m.id === updatedMed.id ? updatedMed : m);
+    const normalizedMed: Medication = {
+      ...updatedMed,
+      isActive: updatedMed.isActive !== false,
+      cycleDays: updatedMed.cycleDays && updatedMed.cycleDays.length > 0 ? updatedMed.cycleDays : [0, 1, 2, 3, 4, 5, 6],
+      stomachCondition: updatedMed.stomachCondition || 'Any'
+    };
+    const newMeds = medications.map(m => m.id === normalizedMed.id ? normalizedMed : m);
     setMedications(newMeds);
     syncDispenserConfig(newMeds);
   };
@@ -353,6 +511,11 @@ const App: React.FC = () => {
   const handleLogDose = (medId: string) => {
     const med = medications.find(m => m.id === medId);
     if (med) {
+        if (med.isActive === false) {
+            addNotification("Medication Inactive", `${med.name} is currently inactive. Activate it in Medications page first.`, 'warning');
+            return;
+        }
+
         if (med.slot) {
             const windowCheck = isWithinDispenseWindow(med, new Date());
             if (!windowCheck.allowed) {
@@ -402,9 +565,10 @@ const App: React.FC = () => {
   };
 
   const handleSnooze = (medId: string) => {
-    const snoozeUntil = Date.now() + 15 * 60 * 1000;
+    const minutes = user.snoozeDurationMinutes || 15;
+    const snoozeUntil = Date.now() + minutes * 60 * 1000;
     setSnoozedMeds(prev => ({ ...prev, [medId]: snoozeUntil }));
-    addNotification("Snoozed", "Reminder set for 15 minutes from now.", 'info');
+    addNotification("Snoozed", `Reminder set for ${minutes} minutes from now.`, 'info');
   };
 
   const handleDismiss = (medId: string) => {
@@ -423,15 +587,71 @@ const App: React.FC = () => {
     }
   };
 
+  const handleUndoSkipped = (logId: string) => {
+    const targetLog = logs.find(l => l.id === logId && l.status === 'Skipped');
+    if (!targetLog) return;
+
+    const newLogs = logs.filter(l => l.id !== logId);
+    setLogs(newLogs);
+    syncLogs(newLogs);
+
+    addNotification("Skip Undone", `${targetLog.medicationName} is back to pending.`, 'info');
+  };
+
+  const handleUndoTaken = (logId: string) => {
+    const targetLog = logs.find(l => l.id === logId && l.status === 'Taken');
+    if (!targetLog) return;
+
+    const newLogs = logs.filter(l => l.id !== logId);
+    setLogs(newLogs);
+    syncLogs(newLogs);
+
+    const med = medications.find(m => m.id === targetLog.medicationId);
+    if (med) {
+      const newMeds = medications.map(m =>
+        m.id === targetLog.medicationId
+          ? { ...m, inventoryCount: Math.max(0, m.inventoryCount + 1) }
+          : m
+      );
+      setMedications(newMeds);
+      syncDispenserConfig(newMeds);
+    }
+
+    addNotification("Dose Undone", `${targetLog.medicationName} was restored to pending.`, 'info');
+  };
+
+  const handleTestReminderNotification = async () => {
+    if (typeof Notification === 'undefined') {
+      addNotification('Notifications Unavailable', 'This browser does not support notifications.', 'warning');
+      return;
+    }
+
+    if (!user.notificationsEnabled || Notification.permission !== 'granted') {
+      setShowNotifPrompt(true);
+      addNotification('Enable Notifications', 'Allow notifications first to run a reminder test.', 'warning');
+      return;
+    }
+
+    const title = 'PillCare Reminder Test';
+    const message = 'Reminder channel is working. Scheduled medication alerts are ready.';
+
+    addNotification(title, message, 'success');
+    await sendBrowserNotification(title, message);
+    playReminderSound(user.notificationSound);
+  };
+
   const handleUpdateProfile = (updatedProfile: UserProfile) => {
-      setUser(updatedProfile);
-      saveUserProfile(updatedProfile);
+      const normalized = normalizeUserProfile(updatedProfile);
+      setUser(normalized);
+      saveUserProfile(normalized);
       addNotification("Profile Updated", "Your changes have been saved successfully.", 'success');
   };
 
   const handleLogout = () => {
     auth.signOut();
   };
+
+  const language = resolveLanguage(user.language);
 
   if (loadingAuth) {
     return (
@@ -450,7 +670,55 @@ const App: React.FC = () => {
 
   return (
     <HashRouter>
-      <Layout notifications={notifications} onClearNotifications={handleClearNotifications}>
+      <Layout notifications={notifications} onClearNotifications={handleClearNotifications} language={language}>
+        {showNotifPrompt && (
+          <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-bold text-amber-900">{tr(language, 'Enable Reminders', 'تفعيل التذكيرات')}</p>
+                <p className="mt-1 text-xs text-amber-800">
+                  {tr(
+                    language,
+                    'Turn on notifications so medication reminders appear even when you leave the app.',
+                    'فعّل الإشعارات ليظهر تنبيه الدواء حتى عند إغلاق التطبيق.'
+                  )}
+                </p>
+                {pushSupported === false && (
+                  <p className="mt-2 text-xs text-amber-800">
+                    {isIosDevice && !isStandaloneMode
+                      ? tr(
+                          language,
+                          "On iPhone, open this site in Safari, tap Share, then Add to Home Screen. Open the installed app and allow notifications.",
+                          "في iPhone افتح الموقع من Safari ثم مشاركة ثم إضافة إلى الشاشة الرئيسية، وبعدها افتح التطبيق واسمح بالإشعارات."
+                        )
+                      : tr(language, "This browser currently does not support web push for this app context.", "هذا المتصفح لا يدعم إشعارات الويب في هذا السياق.")}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={handleHideNotificationPrompt}
+                className="text-xs font-bold text-amber-700 hover:text-amber-900"
+              >
+                {tr(language, 'Not now', 'ليس الآن')}
+              </button>
+            </div>
+
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={handleEnableNotificationsFromPrompt}
+                className="h-10 rounded-xl bg-amber-600 px-4 text-sm font-bold text-white hover:bg-amber-700"
+              >
+                {tr(language, 'Enable Notifications', 'تفعيل الإشعارات')}
+              </button>
+              <button
+                onClick={() => void bootstrapNotifications()}
+                className="h-10 rounded-xl border border-amber-300 px-4 text-sm font-bold text-amber-800 hover:bg-amber-100"
+              >
+                {tr(language, 'Recheck', 'إعادة الفحص')}
+              </button>
+            </div>
+          </div>
+        )}
         <Routes>
           <Route path="/" element={
             <Dashboard 
@@ -459,8 +727,14 @@ const App: React.FC = () => {
                 onLogDose={handleLogDose} 
                 onSnooze={handleSnooze}
                 onDismiss={handleDismiss}
+                onUndoTaken={handleUndoTaken}
+                onUndoSkipped={handleUndoSkipped}
+                onTestNotification={() => void handleTestReminderNotification()}
                 userName={user.name}
                 snoozedMeds={snoozedMeds}
+                notificationsEnabled={Boolean(user.notificationsEnabled)}
+                snoozeMinutes={user.snoozeDurationMinutes || 15}
+                language={language}
             />
           } />
           <Route path="/medications" element={
@@ -468,17 +742,20 @@ const App: React.FC = () => {
                 medications={medications} 
                 onAdd={handleAddMedication} 
                 onUpdate={handleUpdateMedication}
-                onDelete={handleDeleteMedication} 
+                onDelete={handleDeleteMedication}
+                language={language}
             />
           } />
           <Route path="/interactions" element={
             <Interactions 
                 medications={medications} 
-                userAllergies={user.allergies} 
+                userAllergies={user.allergies}
+                userConditions={user.conditions}
+                language={language}
             />
           } />
           <Route path="/history" element={<History logs={logs} />} />
-          <Route path="/reports" element={<Reports logs={logs} medications={medications} />} />
+          <Route path="/reports" element={<Reports logs={logs} medications={medications} language={language} />} />
           <Route path="/profile" element={
             <Profile 
                 user={user} 

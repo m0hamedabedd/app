@@ -65,6 +65,14 @@ export const registerPushToken = async () => {
   }));
 };
 
+export const isWebPushSupported = async () => {
+  if (typeof window === 'undefined') return false;
+  if (!('Notification' in window)) return false;
+  if (!('serviceWorker' in navigator)) return false;
+  if (!('PushManager' in window)) return false;
+  return await isSupported().catch(() => false);
+};
+
 export const listenForForegroundPush = async (
   handler: (payload: MessagePayload) => void
 ) => {
@@ -102,7 +110,7 @@ export const syncDispenserConfig = (medications: Medication[]) => {
   };
 
   medications.forEach(med => {
-    if (med.slot) {
+    if (med.slot && med.isActive !== false) {
       slotConfig[`slot_${med.slot}`] = {
         id: med.id,
         name: med.name,

@@ -1,27 +1,31 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { AppNotification } from '../types';
+import { resolveLanguage, tr } from '../services/i18n';
 
 interface LayoutProps {
   children: React.ReactNode;
   notifications?: AppNotification[];
   onClearNotifications?: () => void;
+  language?: 'en' | 'ar';
 }
 
-export const Layout: React.FC<LayoutProps> = ({ children, notifications = [], onClearNotifications }) => {
+export const Layout: React.FC<LayoutProps> = ({ children, notifications = [], onClearNotifications, language = 'en' }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [showNotifications, setShowNotifications] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
+  const isInteractionsPage = location.pathname === '/interactions';
+  const lang = resolveLanguage(language);
 
   const unreadCount = notifications.filter(n => !n.read).length;
 
   const navItems = [
-    { icon: 'fa-home', label: 'Home', path: '/' },
-    { icon: 'fa-pills', label: 'Meds', path: '/medications' },
-    { icon: 'fa-chart-pie', label: 'Reports', path: '/reports' },
+    { icon: 'fa-home', label: tr(lang, 'Home', 'الرئيسية'), path: '/' },
+    { icon: 'fa-pills', label: tr(lang, 'Meds', 'الأدوية'), path: '/medications' },
+    { icon: 'fa-chart-pie', label: tr(lang, 'Reports', 'التقارير'), path: '/reports' },
     { icon: 'fa-robot', label: 'AI', path: '/interactions' },
-    { icon: 'fa-user', label: 'Profile', path: '/profile' },
+    { icon: 'fa-user', label: tr(lang, 'Profile', 'الملف'), path: '/profile' },
   ];
 
   // Close notification dropdown when clicking outside
@@ -51,14 +55,14 @@ export const Layout: React.FC<LayoutProps> = ({ children, notifications = [], on
       const now = new Date();
       const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
       
-      if (diffInSeconds < 60) return 'Just now';
-      if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
-      if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
-      return date.toLocaleDateString();
+      if (diffInSeconds < 60) return tr(lang, 'Just now', 'الآن');
+      if (diffInSeconds < 3600) return tr(lang, `${Math.floor(diffInSeconds / 60)}m ago`, `منذ ${Math.floor(diffInSeconds / 60)} د`);
+      if (diffInSeconds < 86400) return tr(lang, `${Math.floor(diffInSeconds / 3600)}h ago`, `منذ ${Math.floor(diffInSeconds / 3600)} س`);
+      return date.toLocaleDateString(lang === 'ar' ? 'ar-EG' : 'en-US');
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50 text-gray-900 overflow-hidden font-sans">
+    <div className="flex flex-col h-[100dvh] min-h-[100dvh] bg-gray-50 text-gray-900 overflow-hidden font-sans">
       {/* Header */}
       <header className="bg-white/80 backdrop-blur-md shadow-sm z-30 px-4 py-3 flex justify-between items-center sticky top-0 border-b border-gray-100">
         <div className="flex items-center space-x-2">
@@ -84,13 +88,13 @@ export const Layout: React.FC<LayoutProps> = ({ children, notifications = [], on
             {showNotifications && (
                 <div className="absolute right-0 top-12 w-80 bg-white rounded-2xl shadow-2xl border border-gray-100 overflow-hidden animate-slide-up origin-top-right z-50">
                     <div className="p-4 border-b border-gray-50 flex justify-between items-center bg-gray-50/50">
-                        <h3 className="font-bold text-gray-800">Notifications</h3>
+                        <h3 className="font-bold text-gray-800">{tr(lang, 'Notifications', 'الإشعارات')}</h3>
                         {notifications.length > 0 && (
                             <button 
                                 onClick={onClearNotifications}
                                 className="text-xs font-bold text-teal-600 hover:text-teal-700"
                             >
-                                Clear All
+                                {tr(lang, 'Clear All', 'مسح الكل')}
                             </button>
                         )}
                     </div>
@@ -101,7 +105,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, notifications = [], on
                                 <div className="w-12 h-12 bg-gray-50 rounded-full flex items-center justify-center mb-2">
                                     <i className="fas fa-bell-slash text-xl opacity-50"></i>
                                 </div>
-                                <p className="text-sm font-medium">No notifications</p>
+                                <p className="text-sm font-medium">{tr(lang, 'No notifications', 'لا توجد إشعارات')}</p>
                             </div>
                         ) : (
                             <div className="divide-y divide-gray-50">
@@ -129,8 +133,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, notifications = [], on
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto pb-20 no-scrollbar relative scroll-smooth">
-        <div className="max-w-3xl mx-auto w-full p-4 sm:p-6">
+      <main className={`${isInteractionsPage ? 'flex-1 min-h-0 overflow-y-auto pb-16 sm:pb-20 no-scrollbar relative scroll-smooth' : 'flex-1 min-h-0 overflow-y-auto pb-20 no-scrollbar relative scroll-smooth'}`}>
+        <div className={`${isInteractionsPage ? 'min-h-full w-full' : 'max-w-3xl mx-auto w-full p-4 sm:p-6'}`}>
             {children}
         </div>
       </main>

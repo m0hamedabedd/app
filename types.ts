@@ -9,6 +9,7 @@ export enum DosageForm {
 }
 
 export type FrequencyType = 'Daily' | 'Interval' | 'As Needed';
+export type StomachCondition = 'Any' | 'Before Meal' | 'With Meal' | 'After Meal' | 'Empty Stomach';
 
 export interface Medication {
   id: string;
@@ -20,8 +21,12 @@ export interface Medication {
   frequencyType: FrequencyType; 
   scheduledTimes?: string[]; // Array of times ["08:00", "20:00"]
   intervalHours?: number; // e.g. 4 for "Every 4 hours"
+  cycleDays?: number[]; // Weekdays [0..6], 0=Sunday. If omitted, defaults to daily.
   instructions: string;
+  notes?: string;
+  stomachCondition?: StomachCondition;
   startDate: string;
+  isActive?: boolean;
   refillsRemaining: number;
   inventoryCount: number;
   expiryDate?: string;
@@ -35,6 +40,10 @@ export interface UserProfile {
   allergies: string[];
   emergencyContact: string;
   notificationsEnabled?: boolean;
+  snoozeDurationMinutes?: number;
+  notificationSound?: 'Chime' | 'Beep' | 'Off';
+  appearance?: 'Light' | 'Dark' | 'System';
+  language?: 'en' | 'ar';
   photoURL?: string;
   timezone?: string;
 }
