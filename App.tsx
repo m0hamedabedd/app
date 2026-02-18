@@ -66,6 +66,9 @@ const App: React.FC = () => {
   const firedReminderKeysRef = useRef<Set<string>>(new Set());
   const audioCtxRef = useRef<AudioContext | null>(null);
   const timezoneSyncedRef = useRef<string>("");
+  const medicationsStateRef = useRef<Medication[]>([]);
+  const logsStateRef = useRef<LogEntry[]>([]);
+  const dataListenerStartedAtRef = useRef<number>(0);
   const loggingOutRef = useRef(false);
   const lastUidRef = useRef<string | null>(null);
 
@@ -108,6 +111,14 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    medicationsStateRef.current = medications;
+  }, [medications]);
+
+  useEffect(() => {
+    logsStateRef.current = logs;
+  }, [logs]);
+
+  useEffect(() => {
     if (!currentUser?.uid) return;
     try {
       const medsRaw =
@@ -140,17 +151,38 @@ const App: React.FC = () => {
   // Listen for Data
   useEffect(() => {
     if (currentUser) {
+        dataListenerStartedAtRef.current = Date.now();
         const uid = currentUser.uid;
         const unsubscribe = listenToData(
             (fetchedMeds) => {
-                setMedications(fetchedMeds || []);
-                const serialized = JSON.stringify(fetchedMeds || []);
+                const incoming = fetchedMeds || [];
+                const startupWindowMs = 12000;
+                const withinStartupWindow = Date.now() - dataListenerStartedAtRef.current < startupWindowMs;
+                const shouldKeepCached =
+                  withinStartupWindow &&
+                  incoming.length === 0 &&
+                  medicationsStateRef.current.length > 0;
+
+                if (shouldKeepCached) return;
+
+                setMedications(incoming);
+                const serialized = JSON.stringify(incoming);
                 localStorage.setItem(cacheKeyForUser(uid, 'meds'), serialized);
                 localStorage.setItem(LEGACY_MEDS_CACHE_KEY, serialized);
             },
             (fetchedLogs) => {
-                setLogs(fetchedLogs || []);
-                const serialized = JSON.stringify(fetchedLogs || []);
+                const incoming = fetchedLogs || [];
+                const startupWindowMs = 12000;
+                const withinStartupWindow = Date.now() - dataListenerStartedAtRef.current < startupWindowMs;
+                const shouldKeepCached =
+                  withinStartupWindow &&
+                  incoming.length === 0 &&
+                  logsStateRef.current.length > 0;
+
+                if (shouldKeepCached) return;
+
+                setLogs(incoming);
+                const serialized = JSON.stringify(incoming);
                 localStorage.setItem(cacheKeyForUser(uid, 'logs'), serialized);
                 localStorage.setItem(LEGACY_LOGS_CACHE_KEY, serialized);
             },
@@ -167,15 +199,6 @@ const App: React.FC = () => {
         return () => unsubscribe();
     }
   }, [currentUser]);
-
-  // Sync Logic
-  useEffect(() => {
-    if (currentUser) syncDispenserConfig(medications);
-  }, [medications, currentUser]);
-
-  useEffect(() => {
-    if (currentUser) syncLogs(logs);
-  }, [logs, currentUser]);
 
   // --- Notification System ---
 
