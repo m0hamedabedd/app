@@ -29,6 +29,9 @@ const MOCK_USER: UserProfile = {
 const DISPENSE_WINDOW_MINUTES = 15;
 const NOTIF_BOOTSTRAP_KEY = 'pillcare_notif_bootstrap_v1';
 const NOTIF_PROMPT_HIDE_KEY = 'pillcare_notif_prompt_hide_v1';
+const LEGACY_MEDS_CACHE_KEY = 'pillcare_meds';
+const LEGACY_LOGS_CACHE_KEY = 'pillcare_logs';
+const cacheKeyForUser = (uid: string, bucket: 'meds' | 'logs' | 'profile') => `pillcare_${bucket}_${uid}`;
 
 const normalizeUserProfile = (incoming?: Partial<UserProfile>): UserProfile => {
   const profile = { ...MOCK_USER, ...(incoming || {}) };
@@ -63,10 +66,14 @@ const App: React.FC = () => {
   const firedReminderKeysRef = useRef<Set<string>>(new Set());
   const audioCtxRef = useRef<AudioContext | null>(null);
   const timezoneSyncedRef = useRef<string>("");
+  const loggingOutRef = useRef(false);
+  const lastUidRef = useRef<string | null>(null);
 
   // Auth Listener
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged(u => {
+      const previousUid = lastUidRef.current;
+      lastUidRef.current = u?.uid || null;
       setCurrentUser(u);
       setLoadingAuth(false);
       
@@ -85,27 +92,76 @@ const App: React.FC = () => {
         setSnoozedMeds({});
         setShowNotifPrompt(false);
         setPushSupported(null);
-        localStorage.removeItem('pillcare_meds');
-        localStorage.removeItem('pillcare_logs');
+
+        // Only clear local caches when user explicitly logs out.
+        if (loggingOutRef.current && previousUid) {
+          localStorage.removeItem(cacheKeyForUser(previousUid, 'meds'));
+          localStorage.removeItem(cacheKeyForUser(previousUid, 'logs'));
+          localStorage.removeItem(cacheKeyForUser(previousUid, 'profile'));
+          localStorage.removeItem(LEGACY_MEDS_CACHE_KEY);
+          localStorage.removeItem(LEGACY_LOGS_CACHE_KEY);
+          loggingOutRef.current = false;
+        }
       }
     });
     return unsubscribe;
   }, []);
 
+  useEffect(() => {
+    if (!currentUser?.uid) return;
+    try {
+      const medsRaw =
+        localStorage.getItem(cacheKeyForUser(currentUser.uid, 'meds')) ||
+        localStorage.getItem(LEGACY_MEDS_CACHE_KEY);
+      const logsRaw =
+        localStorage.getItem(cacheKeyForUser(currentUser.uid, 'logs')) ||
+        localStorage.getItem(LEGACY_LOGS_CACHE_KEY);
+      const profileRaw = localStorage.getItem(cacheKeyForUser(currentUser.uid, 'profile'));
+
+      if (medsRaw) {
+        const cachedMeds = JSON.parse(medsRaw);
+        if (Array.isArray(cachedMeds)) setMedications(cachedMeds);
+      }
+      if (logsRaw) {
+        const cachedLogs = JSON.parse(logsRaw);
+        if (Array.isArray(cachedLogs)) setLogs(cachedLogs);
+      }
+      if (profileRaw) {
+        const cachedProfile = JSON.parse(profileRaw);
+        if (cachedProfile && typeof cachedProfile === 'object') {
+          setUser(prev => normalizeUserProfile({ ...prev, ...cachedProfile }));
+        }
+      }
+    } catch (e) {
+      console.error("Failed to hydrate cached user data", e);
+    }
+  }, [currentUser?.uid]);
+
   // Listen for Data
   useEffect(() => {
     if (currentUser) {
+        const uid = currentUser.uid;
         const unsubscribe = listenToData(
             (fetchedMeds) => {
                 setMedications(fetchedMeds || []);
-                localStorage.setItem('pillcare_meds', JSON.stringify(fetchedMeds || []));
+                const serialized = JSON.stringify(fetchedMeds || []);
+                localStorage.setItem(cacheKeyForUser(uid, 'meds'), serialized);
+                localStorage.setItem(LEGACY_MEDS_CACHE_KEY, serialized);
             },
             (fetchedLogs) => {
                 setLogs(fetchedLogs || []);
-                localStorage.setItem('pillcare_logs', JSON.stringify(fetchedLogs || []));
+                const serialized = JSON.stringify(fetchedLogs || []);
+                localStorage.setItem(cacheKeyForUser(uid, 'logs'), serialized);
+                localStorage.setItem(LEGACY_LOGS_CACHE_KEY, serialized);
             },
             (fetchedProfile) => {
                 setUser(prev => normalizeUserProfile({ ...prev, ...fetchedProfile }));
+                if (fetchedProfile) {
+                  localStorage.setItem(
+                    cacheKeyForUser(uid, 'profile'),
+                    JSON.stringify(fetchedProfile)
+                  );
+                }
             }
         );
         return () => unsubscribe();
@@ -648,6 +704,7 @@ const App: React.FC = () => {
   };
 
   const handleLogout = () => {
+    loggingOutRef.current = true;
     auth.signOut();
   };
 
