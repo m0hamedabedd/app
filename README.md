@@ -1,67 +1,112 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# PillCare
 
-# Run and deploy your AI Studio app
+PillCare is a React + Vite medication management app with:
+- smart daily reminders and snooze
+- AI assistant chat and interaction safety checks (Gemini)
+- AI bottle scan for auto-filling medication details
+- adherence analytics and PDF report export
+- Firebase Auth + Realtime Database sync
+- PWA install support and web push notifications (FCM)
 
-This contains everything you need to run your app locally.
+## Tech Stack
 
-View your app in AI Studio: https://ai.studio/apps/drive/1DQvV2cknIdSlojztkDxozCEbWiDwwrPw
+- React 19 + TypeScript + Vite
+- Firebase (Auth, Realtime Database, Cloud Messaging)
+- Firebase Cloud Functions (scheduled reminder push)
+- Gemini (`@google/genai`) for AI features
+- jsPDF + jspdf-autotable for reports
 
-## Run Locally
+## Prerequisites
 
-**Prerequisites:**  Node.js
+- Node.js 20+
+- npm
+- Firebase CLI (for deploying cloud functions)
 
+## Local Setup
 
 1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Set `VITE_FIREBASE_VAPID_KEY` in `.env.local` (for web push)
-4. Run the app:
-   `npm run dev`
+```bash
+npm install
+```
 
-## Deploy To Vercel
+2. Create local env file:
+```bash
+copy .env.example .env.local
+```
 
-1. Import this repo in Vercel.
-2. In **Project Settings > Environment Variables**, add:
-   - `GEMINI_API_KEY` (required for Gemini features)
-   - `VITE_FIREBASE_VAPID_KEY` (required for FCM web push)
-3. Deploy.
+3. Set environment variables in `.env.local`:
+- `GEMINI_API_KEY` (or `VITE_GEMINI_API_KEY`) for Gemini features
+- `VITE_FIREBASE_VAPID_KEY` for web push token registration
 
-This project includes `vercel.json` configured for Vite static output (`dist`).
+4. Start dev server:
+```bash
+npm run dev
+```
 
-## PWA Install (Save As App)
+5. Open `http://localhost:3000`
 
-After deploy on HTTPS (Vercel), open the app once to let the service worker register.
+## Build and Preview
 
-- Android (Chrome): menu -> `Install app` / `Add to Home screen`
-- iOS (Safari): Share -> `Add to Home Screen`
-- Desktop (Chrome/Edge): click the install icon in the address bar
+```bash
+npm run build
+npm run preview
+```
 
-## FCM Push For Closed App Reminders
+## Environment Variables
 
-This repo now includes:
-- client FCM token registration (`services/firebase.ts`)
-- background service worker notification handling (`public/sw.js`)
-- scheduled Firebase Cloud Function to send due-medication push every minute (`functions/index.js`)
+| Variable | Required | Purpose |
+|---|---|---|
+| `GEMINI_API_KEY` | Yes (for AI) | Main Gemini API key used at build time |
+| `VITE_GEMINI_API_KEY` | Optional | Alternative Gemini key variable |
+| `VITE_FIREBASE_VAPID_KEY` | Yes (for push) | FCM web push public VAPID key |
 
-Setup steps:
+## Firebase Notes
 
-1. In Firebase Console -> Cloud Messaging:
-   - Generate a **Web Push certificate key pair**
-   - Copy the **Public key** to:
-     - local `.env.local` as `VITE_FIREBASE_VAPID_KEY`
-     - Vercel Environment Variables as `VITE_FIREBASE_VAPID_KEY`
+- Frontend Firebase config is currently in:
+  - `services/firebase.ts`
+  - `public/sw.js`
+- If you change Firebase projects, update both files.
 
-2. Deploy Cloud Functions:
-   - `cd functions`
-   - `npm install`
-   - `cd ..`
-   - `firebase login`
-   - `firebase deploy --only functions`
+## Push Reminders (FCM + Scheduled Function)
 
-3. In app Profile, enable notifications (browser permission must be granted).
+Client-side pieces:
+- token registration: `services/firebase.ts`
+- background notification handling: `public/sw.js`
+
+Server-side piece:
+- scheduled reminder sender: `functions/index.js`
+
+### Deploy Functions
+
+1. Install function dependencies:
+```bash
+npm --prefix functions install
+```
+
+2. Authenticate and deploy:
+```bash
+firebase login
+firebase deploy --only functions
+```
 
 Notes:
-- Scheduled functions require a Firebase project with billing enabled.
-- Push reminders use each user's `userProfile.timezone` (auto-synced from browser).
+- the scheduler runs every minute
+- billing must be enabled on the Firebase project for scheduled functions
+- reminders use each user's stored timezone (`userProfile.timezone`)
+
+## Deploy to Vercel
+
+1. Import repo into Vercel.
+2. Add environment variables:
+- `GEMINI_API_KEY`
+- `VITE_FIREBASE_VAPID_KEY`
+3. Deploy.
+
+`vercel.json` is already configured for Vite static output (`dist`).
+
+## PWA Install
+
+After deploying on HTTPS:
+- Android (Chrome): `Install app` / `Add to Home screen`
+- iOS (Safari): `Share -> Add to Home Screen`
+- Desktop (Chrome/Edge): use the install icon in the address bar
