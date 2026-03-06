@@ -3,6 +3,7 @@ import { LogEntry, Medication } from '../types';
 import { jsPDF } from "jspdf";
 import autoTable from 'jspdf-autotable';
 import { analyzeAdherencePatterns } from '../services/geminiService';
+import { toLocalDateKey } from '../services/dateUtils';
 import { resolveLanguage, tr } from '../services/i18n';
 
 interface ReportsProps {
@@ -41,9 +42,9 @@ export const Reports: React.FC<ReportsProps> = ({ logs, medications, language = 
     const chartData = Array.from({ length: daysToLookBack }, (_, i) => {
         const d = new Date();
         d.setDate(d.getDate() - (daysToLookBack - 1 - i)); // Correct order
-        const dateStr = d.toISOString().split('T')[0];
+        const dateStr = toLocalDateKey(d);
         
-        const dayLogs = relevantLogs.filter(l => l.timestamp.startsWith(dateStr));
+        const dayLogs = relevantLogs.filter(l => toLocalDateKey(l.timestamp) === dateStr);
         return {
             date: dateStr,
             label: daysToLookBack === 7 
@@ -76,9 +77,9 @@ export const Reports: React.FC<ReportsProps> = ({ logs, medications, language = 
     for (let i = 0; i < 365; i++) {
         const d = new Date();
         d.setDate(d.getDate() - i);
-        const dateStr = d.toISOString().split('T')[0];
+        const dateStr = toLocalDateKey(d);
         
-        const dayLogs = logs.filter(l => l.timestamp.startsWith(dateStr));
+        const dayLogs = logs.filter(l => toLocalDateKey(l.timestamp) === dateStr);
         if (dayLogs.length === 0 && i > 0) break; // Stop if no data (except today)
         
         const hasTaken = dayLogs.some(l => l.status === 'Taken');
@@ -181,7 +182,7 @@ export const Reports: React.FC<ReportsProps> = ({ logs, medications, language = 
         headStyles: { fillColor: [13, 148, 136] },
       });
 
-      doc.save(`PillCare_Report_${new Date().toISOString().split('T')[0]}.pdf`);
+      doc.save(`PillCare_Report_${toLocalDateKey(new Date())}.pdf`);
   };
 
   const handleGenerateInsights = async () => {

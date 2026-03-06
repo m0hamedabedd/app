@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Medication, LogEntry } from '../types';
 import { MedicationCard } from '../components/MedicationCard';
+import { isTimestampOnLocalDate, toLocalDateKey } from '../services/dateUtils';
 import { localeForLanguage, resolveLanguage, tr } from '../services/i18n';
 
 interface DashboardProps {
@@ -56,8 +57,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  const todayStr = new Date().toISOString().split('T')[0];
-  const todayWeekday = new Date().getDay();
+  const todayStr = toLocalDateKey(currentTime);
+  const todayWeekday = currentTime.getDay();
   const activeMedications = medications.filter(m => m.isActive !== false);
 
   const isScheduledToday = (med: Medication) => {
@@ -81,8 +82,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
     });
 
     const scheduledIds = new Set(scheduledMeds.map(m => m.id));
-    const todaysLogs = logs.filter(l => l.timestamp.startsWith(todayStr) && scheduledIds.has(l.medicationId));
-    const takenCount = todaysLogs.filter(l => l.status === 'Taken').length;
+    const todaysLogs = logs.filter(l => isTimestampOnLocalDate(l.timestamp, todayStr) && scheduledIds.has(l.medicationId));
+    const takenCount = todaysLogs.filter(l => l.status === 'Taken' || l.status === 'Dispensed').length;
     const skippedCount = todaysLogs.filter(l => l.status === 'Skipped').length;
     const pendingCount = Math.max(0, totalDoses - takenCount - skippedCount);
     
@@ -146,10 +147,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
       if (med.frequencyType === 'As Needed') return;
 
       const medLogs = logs
-        .filter((l) => l.medicationId === med.id && l.timestamp.startsWith(todayStr) && (l.status === 'Taken' || l.status === 'Skipped'))
+        .filter((l) => l.medicationId === med.id && isTimestampOnLocalDate(l.timestamp, todayStr) && (l.status === 'Taken' || l.status === 'Skipped' || l.status === 'Dispensed'))
         .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-      const actionStatuses = medLogs.map((l) => (l.status === 'Taken' ? 'taken' : 'skipped') as TimelineItem['status']);
+      const actionStatuses = medLogs.map((l) => (l.status === 'Skipped' ? 'skipped' : 'taken') as TimelineItem['status']);
 
       if (med.frequencyType === 'Daily' && (med.scheduledTimes?.length || 0) > 0) {
         const sortedTimes = [...(med.scheduledTimes || [])].sort((a, b) => getTimeSortValue(a) - getTimeSortValue(b));
@@ -215,12 +216,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const upcomingItems = timeline.filter(t => t.status === 'upcoming');
   const todayTakenLogs = useMemo(() => {
     return logs
-      .filter(l => l.timestamp.startsWith(todayStr) && l.status === 'Taken')
+      .filter(l => isTimestampOnLocalDate(l.timestamp, todayStr) && l.status === 'Taken')
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }, [logs, todayStr]);
   const todaySkippedLogs = useMemo(() => {
     return logs
-      .filter((l) => l.timestamp.startsWith(todayStr) && l.status === 'Skipped')
+      .filter((l) => isTimestampOnLocalDate(l.timestamp, todayStr) && l.status === 'Skipped')
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }, [logs, todayStr]);
   const hasTimelineContent =

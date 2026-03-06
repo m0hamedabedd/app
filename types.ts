@@ -46,6 +46,7 @@ export interface UserProfile {
   language?: 'en' | 'ar';
   photoURL?: string;
   timezone?: string;
+  utcOffsetMinutes?: number;
 }
 
 export interface LogEntry {
@@ -53,7 +54,7 @@ export interface LogEntry {
   medicationId: string;
   medicationName: string;
   timestamp: string;
-  status: 'Taken' | 'Missed' | 'Skipped';
+  status: 'Taken' | 'Missed' | 'Skipped' | 'Dispensed';
   notes?: string;
 }
 

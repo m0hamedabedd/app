@@ -10,6 +10,7 @@ import { Reports } from './pages/Reports';
 import { AuthPage } from './pages/Auth';
 import { Medication, UserProfile, LogEntry, AppNotification } from './types';
 import { syncDispenserConfig, sendDispenseCommand, syncLogs, listenToData, auth, saveUserProfile, registerPushToken, listenForForegroundPush, saveUserTimezone, getWebPushSupportStatus } from './services/firebase';
+import { toLocalDateKey } from './services/dateUtils';
 import { resolveLanguage, tr } from './services/i18n';
 
 // Mock Data Structure
@@ -63,7 +64,7 @@ const App: React.FC = () => {
   const [snoozedMeds, setSnoozedMeds] = useState<{ [key: string]: number }>({});
   
   const lastReminderCheckMsRef = useRef<number>(Date.now());
-  const reminderDayRef = useRef<string>(new Date().toISOString().split('T')[0]);
+  const reminderDayRef = useRef<string>(toLocalDateKey(new Date()));
   const firedReminderKeysRef = useRef<Set<string>>(new Set());
   const audioCtxRef = useRef<AudioContext | null>(null);
   const timezoneSyncedRef = useRef<string>("");
@@ -323,7 +324,7 @@ const App: React.FC = () => {
         const fromMs = lastReminderCheckMsRef.current - 1000;
         lastReminderCheckMsRef.current = nowMs;
 
-        const dayKey = now.toISOString().split('T')[0];
+        const dayKey = toLocalDateKey(now);
         if (reminderDayRef.current !== dayKey) {
           reminderDayRef.current = dayKey;
           firedReminderKeysRef.current.clear();
@@ -514,15 +515,17 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!currentUser) return;
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    const utcOffsetMinutes = -new Date().getTimezoneOffset();
+    const tzSyncKey = `${tz}:${utcOffsetMinutes}`;
     if (!tz) return;
-    if (timezoneSyncedRef.current === tz) return;
-    if (user.timezone === tz) {
-      timezoneSyncedRef.current = tz;
+    if (timezoneSyncedRef.current === tzSyncKey) return;
+    if (user.timezone === tz && user.utcOffsetMinutes === utcOffsetMinutes) {
+      timezoneSyncedRef.current = tzSyncKey;
       return;
     }
-    timezoneSyncedRef.current = tz;
-    saveUserTimezone(tz);
-  }, [currentUser, user.timezone]);
+    timezoneSyncedRef.current = tzSyncKey;
+    saveUserTimezone(tz, utcOffsetMinutes);
+  }, [currentUser, user.timezone, user.utcOffsetMinutes]);
 
   const handleClearNotifications = () => {
       setNotifications([]);
@@ -658,7 +661,7 @@ const App: React.FC = () => {
             medicationId: med.id,
             medicationName: med.name,
             timestamp: new Date().toISOString(),
-            status: 'Taken'
+            status: med.slot ? 'Dispensed' : 'Taken'
         };
         const newLogs = [newLog, ...logs];
         setLogs(newLogs);
@@ -778,6 +781,7 @@ const App: React.FC = () => {
   };
 
   const language = resolveLanguage(user.language);
+  const displayLogs = logs.filter(l => l.status !== 'Dispensed');
 
   if (loadingAuth) {
     return (
@@ -887,13 +891,13 @@ const App: React.FC = () => {
                 userId={currentUser?.uid}
             />
           } />
-          <Route path="/history" element={<History logs={logs} />} />
-          <Route path="/reports" element={<Reports logs={logs} medications={medications} language={language} />} />
+          <Route path="/history" element={<History logs={displayLogs} />} />
+          <Route path="/reports" element={<Reports logs={displayLogs} medications={medications} language={language} />} />
           <Route path="/profile" element={
             <Profile 
                 user={user} 
                 medications={medications}
-                logs={logs}
+                logs={displayLogs}
                 onLogout={handleLogout} 
                 onUpdate={handleUpdateProfile} 
             />

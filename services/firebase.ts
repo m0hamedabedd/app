@@ -173,12 +173,17 @@ export const saveUserProfile = (profile: UserProfile) => {
   profileRef.set(sanitizeForFirebase(profile)).catch(e => console.error("Firebase Error (Save Profile):", e));
 };
 
-export const saveUserTimezone = (timezone: string) => {
+export const saveUserTimezone = (timezone: string, utcOffsetMinutes?: number) => {
   const uid = auth.currentUser?.uid;
   if (!uid || !timezone) return;
 
-  const timezoneRef = db.ref(`users/${uid}/userProfile/timezone`);
-  timezoneRef.set(timezone).catch(e => console.error("Firebase Error (Save Timezone):", e));
+  const profileRef = db.ref(`users/${uid}/userProfile`);
+  const payload: Record<string, any> = { timezone };
+  if (typeof utcOffsetMinutes === 'number' && Number.isFinite(utcOffsetMinutes)) {
+    payload.utcOffsetMinutes = utcOffsetMinutes;
+  }
+
+  profileRef.update(sanitizeForFirebase(payload)).catch(e => console.error("Firebase Error (Save Timezone):", e));
 };
 
 /**

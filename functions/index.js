@@ -117,7 +117,7 @@ exports.sendMedicationReminders = onSchedule(
       const actionedCountByMed = {};
       for (const log of logs) {
         if (!log || !log.medicationId) continue;
-        if (log.status !== "Taken" && log.status !== "Skipped") continue;
+        if (log.status !== "Taken" && log.status !== "Skipped" && log.status !== "Dispensed") continue;
 
         const logDateKey = getDateKeyForTimezone(log.timestamp, timezone);
         if (logDateKey !== dateKey) continue;
