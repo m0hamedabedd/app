@@ -81,7 +81,6 @@ const unsigned long BUTTON_DEBOUNCE_MS       = 60;
 const unsigned long BUTTON_EVENT_GAP_MS      = 220;
 const unsigned long BUTTON_ARM_DELAY_MS      = 3000;
 const int           MANUAL_DISPENSE_WINDOW_MINUTES = 20;
-const int           DUE_DISPLAY_GRACE_MINUTES = 30;
 const uint32_t      TIME_SYNC_TIMEOUT_MS     = 2000;
 
 // ---------------------------------------------------------------------------
@@ -89,7 +88,6 @@ const uint32_t      TIME_SYNC_TIMEOUT_MS     = 2000;
 // ---------------------------------------------------------------------------
 struct SlotSchedule {
   bool   active          = false;
-  String medId           = "";
   String name            = "";
   float  turnsPerDose    = 1.0f;
   int    timesCount      = 0;
@@ -190,9 +188,6 @@ void loadTimesFromVariant(JsonVariant timesNode, SlotSchedule& s);
 void drawDashboard(bool force = false);
 void syncTimezoneOffsetFromProfile(bool force = false);
 void primeLastHandledCommandTimestamp();
-String escapeJson(const String& in);
-String buildIsoTimestampUtc();
-void pushTakenLogForSlot(int slotIdx, int timeIdx);
 
 enum ManualDispenseDecision {
   MANUAL_ALLOWED = 0,
@@ -269,62 +264,6 @@ int secondsUntilDailyTime(const struct tm& nowTm, int targetH, int targetM) {
   return delta;
 }
 
-String escapeJson(const String& in) {
-  String out;
-  out.reserve(in.length() + 8);
-  for (int i = 0; i < (int)in.length(); i++) {
-    char c = in[i];
-    if (c == '\\' || c == '\"') out += '\\';
-    if (c >= 0x20) out += c;
-  }
-  return out;
-}
-
-String buildIsoTimestampUtc() {
-  time_t now = time(nullptr);
-  struct tm utcTm;
-  gmtime_r(&now, &utcTm);
-  char buf[32];
-  snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
-           utcTm.tm_year + 1900, utcTm.tm_mon + 1, utcTm.tm_mday,
-           utcTm.tm_hour, utcTm.tm_min, utcTm.tm_sec);
-  return String(buf);
-}
-
-void pushTakenLogForSlot(int slotIdx, int timeIdx) {
-  if (slotIdx < 0 || slotIdx >= SLOT_COUNT) return;
-  if (!checkAuth()) return;
-
-  SlotSchedule& s = gSchedules[slotIdx];
-  String medId = s.medId;
-  if (medId.length() == 0) medId = "slot_" + String(slotIdx + 1);
-
-  String medName = s.name;
-  if (medName.length() == 0) medName = "Slot " + String(slotIdx + 1);
-
-  String logId = String((uint64_t)millis()) + "_" + String(slotIdx + 1) + "_" + String(timeIdx + 1);
-  String ts = buildIsoTimestampUtc();
-
-  String payload = "{";
-  payload += "\"id\":\"" + escapeJson(logId) + "\",";
-  payload += "\"medicationId\":\"" + escapeJson(medId) + "\",";
-  payload += "\"medicationName\":\"" + escapeJson(medName) + "\",";
-  payload += "\"timestamp\":\"" + escapeJson(ts) + "\",";
-  payload += "\"status\":\"Taken\"";
-  payload += "}";
-
-  HTTPClient http;
-  http.begin("https://" + String(FIREBASE_DB_HOST) + "/users/" + gUserUid +
-             "/logs.json?auth=" + gIdToken);
-  http.addHeader("Content-Type", "application/json");
-  int code = http.POST(payload);
-  http.end();
-
-  if (code < 200 || code >= 300) {
-    Serial.printf("[LOG] Failed to push Taken log. code=%d\n", code);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // 11. SCHEDULE HELPERS
 // ---------------------------------------------------------------------------
@@ -359,7 +298,6 @@ float parseTurnsPerDose(JsonVariant slotNode) {
 void clearSchedules() {
   for (int i = 0; i < SLOT_COUNT; i++) {
     gSchedules[i].active       = false;
-    gSchedules[i].medId        = "";
     gSchedules[i].name         = "";
     gSchedules[i].turnsPerDose = 1.0f;
     gSchedules[i].timesCount   = 0;
@@ -411,8 +349,6 @@ void applySlotNode(int idx, JsonVariant slotNode, const SlotSchedule& old) {
   if (idx < 0 || idx >= SLOT_COUNT || slotNode.isNull()) return;
   SlotSchedule& s = gSchedules[idx];
   s.active       = true;
-  s.medId        = slotNode["id"].as<String>();
-  if (s.medId.length() == 0) s.medId = "slot_" + String(idx + 1);
   s.name         = slotNode["name"].as<String>();
   if (s.name.length() == 0) s.name = "Slot " + String(idx + 1);
   s.turnsPerDose = parseTurnsPerDose(slotNode);
@@ -450,44 +386,18 @@ void getNextDispenseInfo(int& outSlot, String& outName,
   struct tm nowTm;
   if (!getLocalTimeSafe(nowTm)) return;
 
-  int nowMinutes = nowTm.tm_hour * 60 + nowTm.tm_min;
-  int bestDueLateness = 9999;
-  int bestFutureSec = -1;
-
   for (int i = 0; i < SLOT_COUNT; i++) {
     const SlotSchedule& s = gSchedules[i];
     if (!s.active || s.timesCount <= 0) continue;
     for (int t = 0; t < s.timesCount; t++) {
       int h = 0, m = 0;
       if (!parseHHMM(s.times[t], h, m)) continue;
-
-      int scheduledMinutes = h * 60 + m;
-      bool alreadyDispensedToday = (s.lastDispensedYDay[t] == nowTm.tm_yday &&
-                                    s.lastDispensedMinuteOfDay[t] == scheduledMinutes);
-
-      int lateness = nowMinutes - scheduledMinutes;
-      if (!alreadyDispensedToday &&
-          lateness >= 0 &&
-          lateness <= DUE_DISPLAY_GRACE_MINUTES) {
-        if (lateness < bestDueLateness) {
-          bestDueLateness = lateness;
-          outSeconds = 0;
-          outSlot    = i + 1;
-          outName    = s.name;
-          outTime    = s.times[t];
-        }
-        continue;
-      }
-
-      if (bestDueLateness != 9999) continue;
-
       int sec = secondsUntilDailyTime(nowTm, h, m);
-      if (bestFutureSec < 0 || sec < bestFutureSec) {
-        bestFutureSec = sec;
-        outSeconds    = sec;
-        outSlot       = i + 1;
-        outName       = s.name;
-        outTime       = s.times[t];
+      if (outSeconds < 0 || sec < outSeconds) {
+        outSeconds = sec;
+        outSlot    = i + 1;
+        outName    = s.name;
+        outTime    = s.times[t];
       }
     }
   }
@@ -1013,7 +923,7 @@ void setup() {
   //   #define TFT_RGB_ORDER TFT_RGB   (or TFT_BGR if colors look wrong)
   tft.init();
   tft.setSwapBytes(true);   // FIX: correct byte order for ST7789
-  tft.setRotation(1);       // Landscape orientation
+  tft.setRotation(0);       // 0=normal, 2=180° flip — change if upside-down
   tft.fillScreen(C_BLACK);
 
   Serial.printf("[DISPLAY] w=%d h=%d\n", tft.width(), tft.height());
@@ -1063,7 +973,6 @@ void loop() {
       float turns = gSchedules[targetSlotIdx].turnsPerDose;
       rotateSlot(targetSlotIdx, turns);
       markDispenseForSlotTime(targetSlotIdx, targetTimeIdx, nowTm);
-      pushTakenLogForSlot(targetSlotIdx, targetTimeIdx);
     } else if (decision == MANUAL_ALREADY_DISPENSED) {
       drawStatusFullscreen("ALREADY DISPENSED", C_URGENT, 1500);
     } else if (decision == MANUAL_OUTSIDE_WINDOW) {
