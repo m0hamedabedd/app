@@ -578,6 +578,19 @@ export const Profile: React.FC<ProfileProps> = ({ user, medications, logs, onLog
               {tr(language, 'Log Out', '\u062a\u0633\u062c\u064a\u0644 \u0627\u0644\u062e\u0631\u0648\u062c')}
             </button>
 
+            <div className="rounded-2xl border border-teal-100 bg-gradient-to-r from-teal-50 to-emerald-50 px-4 py-3 shadow-sm">
+              <div className="flex items-center justify-center gap-2 text-center">
+                <i className="fas fa-certificate text-teal-600 text-sm"></i>
+                <p className="text-xs font-semibold text-teal-700">
+                  {tr(
+                    language,
+                    '© 2026 Mohamed Abed. All rights reserved.',
+                    '\u062c\u0645\u064a\u0639 \u0627\u0644\u062d\u0642\u0648\u0642 \u0645\u062d\u0641\u0648\u0638\u0629 \u0644\u0645\u062d\u0645\u062f \u0639\u0627\u0628\u062f. \u062a\u0645 \u062a\u0646\u0641\u064a\u0630 \u0647\u0630\u0627 \u0627\u0644\u062a\u0637\u0628\u064a\u0642 \u0628\u0627\u0644\u0643\u0627\u0645\u0644 \u0628\u0648\u0627\u0633\u0637\u062a\u0647.'
+                  )}
+                </p>
+              </div>
+            </div>
+
             <p className="text-center text-xs text-gray-400 pt-2">{tr(language, 'Version 1.4.0 - Build 2026', '\u0627\u0644\u0625\u0635\u062f\u0627\u0631 1.4.0 - \u0628\u0646\u0627\u0621 2026')}</p>
           </div>
         )}

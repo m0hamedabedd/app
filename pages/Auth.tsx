@@ -121,9 +121,17 @@ export const AuthPage: React.FC = () => {
         </div>
       </div>
       
-      <p className="mt-8 text-center text-teal-800/40 text-xs font-medium">
-        &copy; 2024 PillCare. Secure & Private.
-      </p>
+      <div className="mt-8 text-center space-y-2">
+        <p className="text-teal-800/40 text-xs font-medium">
+          &copy; 2024 PillCare. Secure & Private.
+        </p>
+        <div className="inline-flex items-center gap-2 rounded-full border border-teal-200/70 bg-white/70 px-4 py-2 shadow-sm">
+          <i className="fas fa-certificate text-teal-600 text-xs"></i>
+          <p className="text-[11px] font-semibold text-teal-700">
+            © 2026 Mohamed Abed. All rights reserved.
+          </p>
+        </div>
+      </div>
     </div>
   );
 };
